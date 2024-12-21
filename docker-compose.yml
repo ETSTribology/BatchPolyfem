@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   minio:
     image: minio/minio:latest
@@ -5,11 +7,14 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_PROMETHEUS_AUTH_TYPE: public  # Optional: Enable Prometheus metrics
     volumes:
       - minio_data:/data
+      - ./blog:/blog  # Mount local blog directory
     ports:
-      - "9000:9000"
-    command: server /data
+      - "9000:9000"    # MinIO API
+      - "20091:9001"   # MinIO Console
+    command: server /data --console-address ":9001"
     restart: unless-stopped
     labels:
       - "com.example.service=minio"
