@@ -127,50 +127,6 @@ services:
     networks:
       - app-network
 
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    ports:
-      - "9090:9090"
-    restart: unless-stopped
-    labels:
-      - "com.example.service=prometheus"
-      - "com.example.environment=production"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - app-network
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    restart: unless-stopped
-    labels:
-      - "com.example.service=grafana"
-      - "com.example.environment=production"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    depends_on:
-      - prometheus
-    networks:
-      - app-network
-
 networks:
   app-network:
     driver: bridge
@@ -211,16 +167,4 @@ volumes:
     driver_opts:
       type: none
       device: ./data/qdrant
-      o: bind
-  prometheus_data:
-    driver: local
-    driver_opts:
-      type: none
-      device: ./data/prometheus
-      o: bind
-  grafana_data:
-    driver: local
-    driver_opts:
-      type: none
-      device: ./data/grafana
       o: bind
