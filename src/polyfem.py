@@ -1,8 +1,13 @@
+import threading
+import time
+import jsonschema
+from typing import List, Dict
+
 class PolyfemRunner:
     """
     A helper class to run Polyfem using a JSON configuration file.
     """
-    def __init__(self, polyfem_path: str, logger, mode: str):
+    def __init__(self, polyfem_path: str, logger: logging.Logger, mode: str):
         self.polyfem_path = polyfem_path
         self.logger = logger
         self.mode = mode  # 'docker' or 'local'
@@ -18,17 +23,25 @@ class PolyfemRunner:
         try:
             with open(config_file, 'r') as f:
                 config_data = json.load(f)
-            validate(instance=config_data, schema=schema)
-            self.logger.info("JSON configuration validated successfully.")
-            return config_data
         except FileNotFoundError:
             self.logger.error(f"Configuration file not found: {config_file}")
             raise
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON format in {config_file}: {e}")
             raise
+
+        try:
+            validate(instance=config_data, schema=schema)
+            self.logger.info("JSON configuration validated successfully.")
+            return config_data
         except jsonschema.exceptions.ValidationError as e:
-            self.logger.error(f"JSON validation error: {e.message}")
+            self.logger.error(f"JSON validation error: {e.message}. Path: {e.path}, Schema path: {e.schema_path}")
+            raise
+        except jsonschema.exceptions.SchemaError as e:
+            self.logger.error(f"Schema error: {e.message}. Invalid schema definition.")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error during JSON validation: {e}")
             raise
 
     def modify_config(self, config_data: Dict, updates: Dict):
@@ -45,8 +58,7 @@ class PolyfemRunner:
                     self.logger.info(f"Updating parameter: {key} -> {value}")
                     config_data[key] = value
                 else:
-                    self.logger.warning(f"Key '{key}' not found in the configuration. Adding new key.")
-                    config_data[key] = value
+                    self.logger.warning(f"Key '{key}' not found in the configuration. Skipping invalid key.")
             return config_data
         except Exception as e:
             self.logger.error(f"An error occurred while modifying the configuration: {e}")
