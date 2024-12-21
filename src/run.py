@@ -5,9 +5,16 @@ from rich.table import Table
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 from rich.logging import RichHandler
 from tqdm import tqdm
-import argparse
 import logging
-from typing import Optional
+from typing import Optional, Dict
+from pymongo import MongoClient
+from minio import Minio
+from kafka import KafkaProducer, KafkaConsumer
+from kafka.errors import KafkaError
+from mongo import MongoConnect
+from minio import MinIOConnect
+from kafka import KafkaConnect
+from config import Config
 
 app = typer.Typer()
 console = Console()
@@ -28,27 +35,38 @@ def setup_logging(verbose: bool):
     logger = logging.getLogger("rich")
     return logger
 
-def parse_arguments():
-    """
-    Parse command-line arguments using argparse.
-    This is for demonstration; Typer can handle arguments itself.
-    """
-    parser = argparse.ArgumentParser(description="Process a JSON file.")
-    parser.add_argument(
-        "-f",
-        "--file",
-        type=str,
-        default="config.json",
-        help="Path to the JSON file to process.",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output.",
-    )
-    args = parser.parse_args()
-    return args
+def create_kafka_queues(kafka_producer):
+    """Create Kafka queues for Polyfem execution and file processing."""
+    try:
+        kafka_producer.send("polyfem_queue", b"Initialize Polyfem execution queue")
+        kafka_producer.send("file_processing_queue", b"Initialize file processing queue")
+        console.log("[green]Kafka queues created successfully.[/green]")
+    except KafkaError as e:
+        console.log(f"[red]Failed to create Kafka queues: {e}[/red]")
+        raise typer.Exit(code=1)
+
+def process_file_and_dump_to_mongo(minio_client, mongo_client, bucket_name, object_name):
+    """Process a file from MinIO and dump the data into MongoDB."""
+    try:
+        # Download the file from MinIO
+        file_path = f"/tmp/{object_name}"
+        minio_client.download_object(bucket_name, object_name, file_path)
+        console.log(f"[green]Successfully downloaded {object_name} from {bucket_name}.[/green]")
+
+        # Read and process the file
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        console.log(f"[green]File {object_name} processed successfully.[/green]")
+
+        # Insert data into MongoDB
+        db = mongo_client.get_database("polyfem")
+        collection = db.get_collection("processed_files")
+        collection.insert_one(data)
+        console.log(f"[green]Data from {object_name} inserted into MongoDB.[/green]")
+
+    except Exception as e:
+        console.log(f"[red]Error processing file {object_name}: {e}[/red]")
+        raise typer.Exit(code=1)
 
 @app.command()
 def run(
@@ -73,29 +91,29 @@ def run(
 
     logger.debug(f"Starting the run command with file: {file} and verbose={verbose}")
 
-    # Load JSON data
-    try:
-        with open(file, "r") as f:
-            data = json.load(f)
-        logger.info(f"Successfully loaded JSON file: {file}")
-    except FileNotFoundError:
-        logger.error(f"File not found: {file}")
-        raise typer.Exit(code=1)
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON format in {file}: {e}")
-        raise typer.Exit(code=1)
+    # Load configuration using Config class
+    config = Config(file, verbose=verbose).settings
 
-    # Check if 'tasks' key exists and is a list
-    tasks = data.get("tasks")
-    if not isinstance(tasks, list):
-        logger.error("JSON does not contain a 'tasks' list.")
+    # Initialize connections using respective classes
+    mongo_client = MongoConnect(config["mongo"])
+    minio_client = MinIOConnect(config["minio"])
+    kafka_producer = KafkaConnect(config["kafka"])
+
+    logger.debug("Connections to MongoDB, MinIO, and Kafka established successfully.")
+
+    # Create Kafka queues
+    create_kafka_queues(kafka_producer)
+
+    # Example task processing logic
+    tasks = config.get("tasks", [])
+    if not tasks:
+        logger.error("No tasks found in the configuration.")
         raise typer.Exit(code=1)
 
     logger.debug(f"Number of tasks to process: {len(tasks)}")
 
     # Display tasks using Rich Table
     table = Table(title="Tasks Overview")
-
     table.add_column("ID", justify="right", style="cyan", no_wrap=True)
     table.add_column("Name", style="magenta")
     table.add_column("Description", style="green")
@@ -122,7 +140,13 @@ def run(
     ) as progress:
         task_progress = progress.add_task("[green]Processing...", total=len(tasks))
         for task in tasks:
-            # Simulate some processing
+            if task.get("type") == "file_processing":
+                process_file_and_dump_to_mongo(
+                    minio_client,
+                    mongo_client,
+                    task.get("bucket_name"),
+                    task.get("object_name")
+                )
             import time
             time.sleep(0.5)
             progress.advance(task_progress)
@@ -130,22 +154,5 @@ def run(
 
     logger.info("Completed processing with Rich Progress.")
 
-    # Alternatively, using tqdm for a simple progress bar
-    logger.debug("Starting processing with tqdm.")
-    if verbose:
-        console.print("[bold yellow]Processing tasks with tqdm...[/bold yellow]")
-
-    for task in tqdm(tasks, desc="Processing tasks", unit="task"):
-        # Simulate some processing
-        import time
-        time.sleep(0.5)
-        logger.debug(f"Processed task ID with tqdm: {task.get('id', 'N/A')}")
-
-    logger.info("Completed processing with tqdm.")
-
-    console.print("[bold green]All tasks have been processed successfully![/bold green]")
-    logger.debug("Run command completed successfully.")
-
 if __name__ == "__main__":
-    args = parse_arguments()
     app()
