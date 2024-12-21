@@ -26,6 +26,30 @@ The following table provides an overview of the infrastructure components, their
 
 [![](https://mermaid.ink/img/pako:eNqNUbtuwzAM_BWBc_IDHjoEWoIiKIoUGVplYCzaFlJThiwFSJP8e2nLdsZ24vF4Oj50g9JbggLqgF2jPrRhw0r16ZSJLVcB-xhSGVOgoaTUzvH27cvAGA0cM_uK1RmFHePC7jzXXm8GdUZL5d0G5CiFDCae2OYJRnO1Xr_cDezxQmrjGMNVaYzifp-NR2mGszj6QOpApUT3Q3Z5MfXhadRJrp1s504p0tN63OsfuucIfyhza1hBS6FFZ-Xet-GZgdhQSwYKgRbD2YDhh-gwRb-_cgmFnJ5WEHyqGygq_O4lS53FSNqh_FG7sB3yp_dz_vgFly6djQ?type=png)](https://mermaid.live/edit#pako:eNqNUbtuwzAM_BWBc_IDHjoEWoIiKIoUGVplYCzaFlJThiwFSJP8e2nLdsZ24vF4Oj50g9JbggLqgF2jPrRhw0r16ZSJLVcB-xhSGVOgoaTUzvH27cvAGA0cM_uK1RmFHePC7jzXXm8GdUZL5d0G5CiFDCae2OYJRnO1Xr_cDezxQmrjGMNVaYzifp-NR2mGszj6QOpApUT3Q3Z5MfXhadRJrp1s504p0tN63OsfuucIfyhza1hBS6FFZ-Xet-GZgdhQSwYKgRbD2YDhh-gwRb-_cgmFnJ5WEHyqGygq_O4lS53FSNqh_FG7sB3yp_dz_vgFly6djQ)
 
+
+## Event Flow
+
+The following sequence demonstrates the interaction between services during the lifecycle of a batch processing event. It highlights how events flow from Kafka to PolyRunnerBatch, Polyfem instances, MinIO, and finally MongoDB.
+
+### Process Flow Description
+
+1. **Trigger Event**: An event is published to Kafka to initiate a PolyRunnerBatch.
+2. **PolyRunnerBatch**: The PolyRunnerBatch service processes the event and spawns multiple Polyfem instances.
+3. **Polyfem Instances**: Each Polyfem instance processes its assigned task. Upon successful completion, it uploads results to MinIO.
+4. **MinIO Notification**: Once the upload to MinIO is complete, an event is triggered to process the uploaded data.
+5. **Data Processing**: A service retrieves the data from MinIO, processes it, and stores the processed data in MongoDB.
+
+
+### Explanation
+
+- **Kafka**: Acts as the event broker, triggering batch simulations.
+- **PolyRunnerBatch**: Manages the orchestration of simulation tasks by creating events for each Polyfem instance.
+- **Polyfem Instances**: Perform the computational tasks for the simulations.
+- **MinIO**: Serves as the storage backend for the simulation outputs.
+- **MongoDB**: Stores the final processed data, making it available for querying and visualization.
+
+[![](https://mermaid.ink/img/pako:eNqVkbFuwjAQhl_FugkkGMqYgYGmQ1VBEaFL5eWUXJyIxBdd7EoIePc6TlvUqqqKF_s_fZ8t350g54IgASPYVWqfaqvCesLygJNJ3KZTNZ8vz3upjSFRD29k3VltuTnuvLUkK3R5NWo_itG7F0JH_ej1o1hSe3ezsbjZ2Gh7dYY3I_zSNYyFynyeUx_gdW0fn79xi39ym7-4kYzh1_4JD3iKDj_uvBYinzkWUjvqfTN8ac3WcLqCGbQkLdZFmNlpMDW4ilrSkIRjgXLQoO0lcOgdZ0ebQ-LE0wyEvakgKbHpQ_JdEVqW1hgG335VO7SvzJ_58g4eibin?type=png)](https://mermaid.live/edit#pako:eNqVkbFuwjAQhl_FugkkGMqYgYGmQ1VBEaFL5eWUXJyIxBdd7EoIePc6TlvUqqqKF_s_fZ8t350g54IgASPYVWqfaqvCesLygJNJ3KZTNZ8vz3upjSFRD29k3VltuTnuvLUkK3R5NWo_itG7F0JH_ej1o1hSe3ezsbjZ2Gh7dYY3I_zSNYyFynyeUx_gdW0fn79xi39ym7-4kYzh1_4JD3iKDj_uvBYinzkWUjvqfTN8ac3WcLqCGbQkLdZFmNlpMDW4ilrSkIRjgXLQoO0lcOgdZ0ebQ-LE0wyEvakgKbHpQ_JdEVqW1hgG335VO7SvzJ_58g4eibin)
+
 ## Getting Started
 
 ### Prerequisites
