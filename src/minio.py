@@ -1,6 +1,12 @@
-from minio import Minio
-from minio.error import S3Error, ResponseError
 import threading
+import time
+import jsonschema
+from typing import List, Dict
+from kafka import KafkaProducer, KafkaConsumer
+from minio import Minio
+from minio.error import S3Error
+from pymongo import MongoClient, errors
+import json
 import logging
 from rich.console import Console
 from rich.logging import RichHandler
@@ -216,11 +222,12 @@ class MinioEventConsumer:
     """
     A class to consume events about uploads to MinIO and handle them.
     """
-    def __init__(self, kafka_consumer: KafkaConsumer, minio_client: Minio, bucket_name: str, logger: logging.Logger):
+    def __init__(self, kafka_consumer: KafkaConsumer, minio_client: Minio, bucket_name: str, logger: logging.Logger, mongo_client: MongoClient):
         self.kafka_consumer = kafka_consumer
         self.minio_client = minio_client
         self.bucket_name = bucket_name
         self.logger = logger
+        self.mongo_client = mongo_client
 
     def handle_event(self, event_data: dict):
         """
@@ -236,6 +243,13 @@ class MinioEventConsumer:
         try:
             # Process the uploaded object
             self.logger.info(f"Processing completed upload: {object_name}")
+
+            # Interact with MongoDB to save the event data
+            db = self.mongo_client["minio_events"]
+            collection = db["uploads"]
+            collection.insert_one(event_data)
+            self.logger.info(f"Event data saved to MongoDB: {event_data}")
+
             # Example: list objects in the bucket
             objects = self.minio_client.list_objects(self.bucket_name)
             for obj in objects:
@@ -243,6 +257,8 @@ class MinioEventConsumer:
 
         except S3Error as e:
             self.logger.error(f"Error processing MinIO event: {e}")
+        except errors.PyMongoError as e:
+            self.logger.error(f"Error interacting with MongoDB: {e}")
 
     def consume_events(self):
         """
