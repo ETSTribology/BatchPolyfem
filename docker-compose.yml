@@ -1,0 +1,221 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+    command: server /data
+    restart: unless-stopped
+    labels:
+      - "com.example.service=minio"
+      - "com.example.environment=production"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper
+    restart: unless-stopped
+    labels:
+      - "com.example.service=zookeeper"
+      - "com.example.environment=production"
+    healthcheck:
+      test: ["CMD", "echo", "ruok | nc", "localhost", "2181"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    restart: unless-stopped
+    labels:
+      - "com.example.service=kafka"
+      - "com.example.environment=production"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    labels:
+      - "com.example.service=mongo"
+      - "com.example.environment=production"
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__COLLECTIONS__DEFAULT__NAME: default
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    labels:
+      - "com.example.service=qdrant"
+      - "com.example.environment=production"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/collections"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    labels:
+      - "com.example.service=prometheus"
+      - "com.example.environment=production"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
+    labels:
+      - "com.example.service=grafana"
+      - "com.example.environment=production"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      - prometheus
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  minio_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/minio
+      o: bind
+  rabbitmq_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/rabbitmq
+      o: bind
+  zookeeper_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/zookeeper
+      o: bind
+  kafka_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/kafka
+      o: bind
+  mongo_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/mongo
+      o: bind
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/qdrant
+      o: bind
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/prometheus
+      o: bind
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ./data/grafana
+      o: bind
