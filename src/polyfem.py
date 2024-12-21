@@ -1,132 +1,151 @@
-import threading
+import os
+import json
+import subprocess
+import logging
 import time
-import jsonschema
-from typing import List, Dict
+from typing import List, Dict, Optional
+from jsonschema import validate, ValidationError, SchemaError
+
 
 class PolyfemRunner:
     """
     A helper class to run Polyfem using a JSON configuration file.
     """
     def __init__(self, polyfem_path: str, logger: logging.Logger, mode: str):
-        self.polyfem_path = polyfem_path
+        """
+        Initialize the PolyfemRunner instance.
+        
+        :param polyfem_path: Path to the Polyfem executable or Docker image.
+        :param logger: Logger instance for logging information.
+        :param mode: Execution mode ('docker' or 'local').
+        """
+        self.polyfem_path = os.path.abspath(polyfem_path)
         self.logger = logger
-        self.mode = mode  # 'docker' or 'local'
+        self.mode = mode.lower()
+        if self.mode not in ['docker', 'local']:
+            raise ValueError("Mode must be 'docker' or 'local'")
+        self.logger.info(f"Initialized PolyfemRunner in {self.mode} mode with path: {self.polyfem_path}")
 
-    def parse_and_validate_json(self, config_file: str, schema: Dict):
+    def load_schema(self, schema_dir: str, schema_name: str) -> Dict:
         """
-        Parses and validates the JSON configuration file against a schema.
+        Load the JSON schema from the specified directory.
+        
+        :param schema_dir: Directory containing the schema file.
+        :param schema_name: Name of the schema file.
+        :return: Loaded schema as a dictionary.
+        """
+        schema_path = os.path.join(schema_dir, schema_name)
+        if not os.path.exists(schema_path):
+            self.logger.error(f"Schema file does not exist: {schema_path}")
+            raise FileNotFoundError(f"Schema file not found: {schema_path}")
 
-        :param config_file: Path to the JSON configuration file.
+        try:
+            with open(schema_path, "r") as f:
+                schema = json.load(f)
+            self.logger.info(f"Successfully loaded schema from {schema_path}")
+            return schema
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Invalid JSON format in schema file {schema_path}: {e}")
+            raise
+
+    def parse_and_validate_json(self, config_file: str, schema: Dict) -> Dict:
+        """
+        Parse and validate a JSON configuration file.
+        
+        :param config_file: Path to the configuration file.
         :param schema: JSON schema for validation.
-        :return: Parsed JSON data.
+        :return: Validated configuration data.
         """
+        if not os.path.exists(config_file):
+            self.logger.error(f"Configuration file not found: {config_file}")
+            raise FileNotFoundError(f"Configuration file not found: {config_file}")
+
         try:
             with open(config_file, 'r') as f:
                 config_data = json.load(f)
-        except FileNotFoundError:
-            self.logger.error(f"Configuration file not found: {config_file}")
+            validate(instance=config_data, schema=schema)
+            self.logger.info(f"Configuration file {config_file} validated successfully.")
+            return config_data
+        except (ValidationError, SchemaError) as e:
+            self.logger.error(f"JSON validation error: {e.message}")
             raise
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON format in {config_file}: {e}")
             raise
 
-        try:
-            validate(instance=config_data, schema=schema)
-            self.logger.info("JSON configuration validated successfully.")
-            return config_data
-        except jsonschema.exceptions.ValidationError as e:
-            self.logger.error(f"JSON validation error: {e.message}. Path: {e.path}, Schema path: {e.schema_path}")
-            raise
-        except jsonschema.exceptions.SchemaError as e:
-            self.logger.error(f"Schema error: {e.message}. Invalid schema definition.")
-            raise
-        except Exception as e:
-            self.logger.error(f"Unexpected error during JSON validation: {e}")
-            raise
-
-    def modify_config(self, config_data: Dict, updates: Dict):
+    def modify_config(self, config_data: Dict, updates: Dict) -> Dict:
         """
-        Modifies specific parameters in the configuration data.
-
+        Modify specific parameters in the configuration data.
+        
         :param config_data: Original configuration data.
-        :param updates: Dictionary of updates to apply to the configuration.
+        :param updates: Updates to apply.
         :return: Updated configuration data.
         """
-        try:
-            for key, value in updates.items():
-                if key in config_data:
-                    self.logger.info(f"Updating parameter: {key} -> {value}")
-                    config_data[key] = value
-                else:
-                    self.logger.warning(f"Key '{key}' not found in the configuration. Skipping invalid key.")
-            return config_data
-        except Exception as e:
-            self.logger.error(f"An error occurred while modifying the configuration: {e}")
-            raise
+        for key, value in updates.items():
+            if key in config_data:
+                self.logger.info(f"Updating parameter '{key}' to '{value}'")
+                config_data[key] = value
+            else:
+                self.logger.warning(f"Key '{key}' not found in the configuration. Skipping.")
+        return config_data
 
-    def save_config(self, config_data: Dict, config_file: str):
+    def save_config(self, config_data: Dict, config_file: str) -> None:
         """
-        Saves the modified configuration data back to a file.
-
+        Save the modified configuration data to a file.
+        
         :param config_data: Modified configuration data.
-        :param config_file: Path to the JSON configuration file.
+        :param config_file: Path to save the configuration file.
         """
         try:
             with open(config_file, 'w') as f:
                 json.dump(config_data, f, indent=4)
-            self.logger.info(f"Configuration saved successfully to {config_file}.")
+            self.logger.info(f"Configuration saved to {config_file}")
         except Exception as e:
-            self.logger.error(f"An error occurred while saving the configuration: {e}")
+            self.logger.error(f"Error saving configuration: {e}")
             raise
 
-    def run_simulation(self, config_file: str, schema: Dict, updates: Dict = None):
+    def _run_command(self, command: List[str]) -> subprocess.CompletedProcess:
         """
-        Executes Polyfem with the given configuration file and tracks execution time.
+        Helper method to run a subprocess command.
+        
+        :param command: Command to execute.
+        :return: CompletedProcess instance with the results.
+        """
+        self.logger.debug(f"Executing command: {' '.join(command)}")
+        try:
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            self.logger.debug(f"Command output: {result.stdout}")
+            return result
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Command failed with error: {e.stderr}")
+            raise
 
-        :param config_file: Path to the JSON configuration file.
+    def run_simulation(self, config_file: str, schema: Dict, updates: Optional[Dict] = None) -> None:
+        """
+        Execute Polyfem simulation with the given configuration file.
+        
+        :param config_file: Path to the configuration file.
         :param schema: JSON schema for validation.
-        :param updates: Optional dictionary of updates to modify in the configuration before execution.
+        :param updates: Optional updates to apply before execution.
         """
-        import subprocess
-
-        # Parse and validate JSON
+        # Validate and modify configuration
         config_data = self.parse_and_validate_json(config_file, schema)
-
-        # Modify configuration if updates are provided
         if updates:
             config_data = self.modify_config(config_data, updates)
             self.save_config(config_data, config_file)
 
-        try:
-            self.logger.info(f"Running Polyfem in {self.mode} mode with config: {config_file}")
+        # Determine command based on execution mode
+        if self.mode == "docker":
+            command = ["docker", "run", "-v", f"{os.path.abspath(config_file)}:{config_file}", "polyfem", "--json", config_file]
+        else:
             command = [self.polyfem_path, "--json", config_file]
-            if self.mode == "docker":
-                command = ["docker", "run", "-v", f"{config_file}:{config_file}", "polyfem", "--json", config_file]
 
-            # Track start time
-            start_time = time.time()
-
-            # Execute Polyfem
-            result = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-
-            # Track end time
+        # Run simulation
+        start_time = time.time()
+        try:
+            result = self._run_command(command)
             elapsed_time = time.time() - start_time
-            self.logger.info(f"Execution time: {elapsed_time:.2f} seconds")
-
-            if result.returncode == 0:
-                self.logger.info(f"Polyfem simulation completed successfully:\n{result.stdout}")
-            else:
-                self.logger.error(f"Polyfem simulation failed with errors:\n{result.stderr}")
-                raise RuntimeError("Polyfem simulation failed")
-
-        except FileNotFoundError:
-            self.logger.error("Polyfem executable not found at the specified path.")
-            raise
+            self.logger.info(f"Simulation completed successfully in {elapsed_time:.2f} seconds")
+            self.logger.info(result.stdout)
         except Exception as e:
-            self.logger.error(f"An error occurred while running Polyfem: {e}")
-            raise
+            self.logger.error(f"Simulation failed: {e}")
