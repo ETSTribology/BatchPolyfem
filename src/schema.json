@@ -132,6 +132,111 @@
       },
       "required": ["GF_SECURITY_ADMIN_USER", "GF_SECURITY_ADMIN_PASSWORD"],
       "additionalProperties": false
+    },
+    "simulation": {
+      "type": "object",
+      "properties": {
+        "dt": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0.0001
+          },
+          "minItems": 1,
+          "description": "List of time step sizes for the simulation."
+        },
+        "tend": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0.1
+          },
+          "minItems": 1,
+          "description": "List of end times for simulations."
+        },
+        "materials": {
+          "type": "object",
+          "properties": {
+            "poisson_ratios": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 0.5
+              },
+              "minItems": 1,
+              "description": "List of Poisson's ratios for materials."
+            },
+            "young_moduli": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              },
+              "minItems": 1,
+              "description": "List of Young's moduli for materials."
+            },
+            "densities": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              },
+              "minItems": 1,
+              "description": "List of densities for materials."
+            }
+          },
+          "required": ["poisson_ratios", "young_moduli", "densities"],
+          "additionalProperties": false
+        },
+        "linear_strings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of linear strings for simulation parameters or identifiers."
+        },
+        "models": {
+          "type": "object",
+          "properties": {
+            "model_type_a": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "List of Model Type A identifiers or descriptions."
+            },
+            "model_type_b": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "List of Model Type B identifiers or descriptions."
+            }
+          },
+          "required": ["model_type_a", "model_type_b"],
+          "additionalProperties": false
+        },
+        "apply_force": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "description": "List of force magnitudes to apply in the simulation."
+        },
+        "movement_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of movement type identifiers or descriptions."
+        }
+      },
+      "required": ["dt", "tend", "materials", "linear_strings", "models", "apply_force", "movement_types"],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -143,7 +248,8 @@
     "kafka",
     "mongo",
     "qdrant",
-    "grafana"
+    "grafana",
+    "simulation"
   ],
   "additionalProperties": false
 }
