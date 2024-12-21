@@ -2,6 +2,14 @@
   "database_url": "postgresql://localhost:5432/mydb",
   "api_key": "abcdef123456",
   "debug": true,
+  "execution_mode": "ray",
+  "polyfem_mode": "docker",
+  "polyfem": {
+    "docker_image": "polyfem/polyfem:latest",
+    "local_executable_path": "/path/to/polyfem",
+    "shared_volume": "/data/polyfem",
+    "docker_network": "host"
+  },
   "minio": {
     "MINIO_ROOT_USER": "minioadmin",
     "MINIO_ROOT_PASSWORD": "minioadmin",
