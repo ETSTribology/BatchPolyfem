@@ -1,0 +1,32 @@
+{
+  "database_url": "postgresql://localhost:5432/mydb",
+  "api_key": "abcdef123456",
+  "debug": true,
+  "minio": {
+    "MINIO_ROOT_USER": "minioadmin",
+    "MINIO_ROOT_PASSWORD": "minioadmin",
+    "MINIO_PROMETHEUS_AUTH_TYPE": "public"
+  },
+  "zookeeper": {
+    "ZOOKEEPER_CLIENT_PORT": 2181,
+    "ZOOKEEPER_TICK_TIME": 2000
+  },
+  "kafka": {
+    "KAFKA_BROKER_ID": 1,
+    "KAFKA_ZOOKEEPER_CONNECT": "zookeeper:2181",
+    "KAFKA_ADVERTISED_LISTENERS": "PLAINTEXT://localhost:9092",
+    "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR": 1
+  },
+  "mongo": {
+    "MONGO_INITDB_ROOT_USERNAME": "root",
+    "MONGO_INITDB_ROOT_PASSWORD": "example"
+  },
+  "qdrant": {
+    "QDRANT__SERVICE__HTTP_PORT": 6333,
+    "QDRANT__COLLECTIONS__DEFAULT__NAME": "default"
+  },
+  "grafana": {
+    "GF_SECURITY_ADMIN_USER": "admin",
+    "GF_SECURITY_ADMIN_PASSWORD": "admin"
+  }
+}
