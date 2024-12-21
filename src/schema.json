@@ -16,6 +16,38 @@
       "type": "boolean",
       "description": "Flag to enable or disable debug mode."
     },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["ray", "thread"],
+      "description": "Execution mode, either 'ray' for distributed execution or 'thread' for local threading."
+    },
+    "polyfem_mode": {
+      "type": "string",
+      "enum": ["docker", "local"],
+      "description": "Polyfem execution mode, either 'docker' or 'local'."
+    },
+    "polyfem": {
+      "type": "object",
+      "properties": {
+        "docker_image": {
+          "type": "string",
+          "description": "Docker image name for Polyfem, required if polyfem_mode is 'docker'."
+        },
+        "local_executable_path": {
+          "type": "string",
+          "description": "Path to the local Polyfem executable, required if polyfem_mode is 'local'."
+        },
+        "shared_volume": {
+          "type": "string",
+          "description": "Optional shared volume directory for Docker mode."
+        },
+        "docker_network": {
+          "type": "string",
+          "description": "Optional Docker network configuration."
+        }
+      },
+      "additionalProperties": false
+    },
     "minio": {
       "type": "object",
       "properties": {
@@ -243,6 +275,9 @@
     "database_url",
     "api_key",
     "debug",
+    "execution_mode",
+    "polyfem_mode",
+    "polyfem",
     "minio",
     "zookeeper",
     "kafka",
