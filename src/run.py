@@ -35,39 +35,6 @@ def setup_logging(verbose: bool):
     logger = logging.getLogger("rich")
     return logger
 
-def create_kafka_queues(kafka_producer):
-    """Create Kafka queues for Polyfem execution and file processing."""
-    try:
-        kafka_producer.send("polyfem_queue", b"Initialize Polyfem execution queue")
-        kafka_producer.send("file_processing_queue", b"Initialize file processing queue")
-        console.log("[green]Kafka queues created successfully.[/green]")
-    except KafkaError as e:
-        console.log(f"[red]Failed to create Kafka queues: {e}[/red]")
-        raise typer.Exit(code=1)
-
-def process_file_and_dump_to_mongo(minio_client, mongo_client, bucket_name, object_name):
-    """Process a file from MinIO and dump the data into MongoDB."""
-    try:
-        # Download the file from MinIO
-        file_path = f"/tmp/{object_name}"
-        minio_client.download_object(bucket_name, object_name, file_path)
-        console.log(f"[green]Successfully downloaded {object_name} from {bucket_name}.[/green]")
-
-        # Read and process the file
-        with open(file_path, "r") as f:
-            data = json.load(f)
-        console.log(f"[green]File {object_name} processed successfully.[/green]")
-
-        # Insert data into MongoDB
-        db = mongo_client.get_database("polyfem")
-        collection = db.get_collection("processed_files")
-        collection.insert_one(data)
-        console.log(f"[green]Data from {object_name} inserted into MongoDB.[/green]")
-
-    except Exception as e:
-        console.log(f"[red]Error processing file {object_name}: {e}[/red]")
-        raise typer.Exit(code=1)
-
 @app.command()
 def run(
     file: str = typer.Option(
@@ -100,9 +67,6 @@ def run(
     kafka_producer = KafkaConnect(config["kafka"])
 
     logger.debug("Connections to MongoDB, MinIO, and Kafka established successfully.")
-
-    # Create Kafka queues
-    create_kafka_queues(kafka_producer)
 
     # Example task processing logic
     tasks = config.get("tasks", [])
