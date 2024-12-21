@@ -210,3 +210,51 @@ class MinIOConnect(metaclass=SingletonMeta):
         except S3Error as e:
             self.logger.error(f"Error ensuring bucket '{bucket_name}' exists: {e}")
             raise
+
+
+class MinioEventConsumer:
+    """
+    A class to consume events about uploads to MinIO and handle them.
+    """
+    def __init__(self, kafka_consumer: KafkaConsumer, minio_client: Minio, bucket_name: str, logger: logging.Logger):
+        self.kafka_consumer = kafka_consumer
+        self.minio_client = minio_client
+        self.bucket_name = bucket_name
+        self.logger = logger
+
+    def handle_event(self, event_data: dict):
+        """
+        Handles an upload completion event.
+
+        :param event_data: Event data from Kafka.
+        """
+        object_name = event_data.get("object_name")
+        if not object_name:
+            self.logger.error("Invalid event data: missing 'object_name'.")
+            return
+
+        try:
+            # Process the uploaded object
+            self.logger.info(f"Processing completed upload: {object_name}")
+            # Example: list objects in the bucket
+            objects = self.minio_client.list_objects(self.bucket_name)
+            for obj in objects:
+                self.logger.info(f"Found object: {obj.object_name}")
+
+        except S3Error as e:
+            self.logger.error(f"Error processing MinIO event: {e}")
+
+    def consume_events(self):
+        """
+        Consumes events from Kafka and handles them.
+        """
+        self.logger.info("Starting to consume events from Kafka.")
+        for message in self.kafka_consumer:
+            try:
+                event_data = json.loads(message.value)
+                self.handle_event(event_data)
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to decode Kafka message: {e}")
+            except Exception as e:
+                self.logger.error(f"Error handling Kafka message: {e}")
+
