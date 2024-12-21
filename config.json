@@ -13,7 +13,7 @@
   },
   "kafka": {
     "KAFKA_BROKER_ID": 1,
-    "KAFKA_ZOOKEEPER_CONNECT": "zookeeper:2181",
+    "KAFKA_ZOOKEEPER_CONNECT": "http://zookeeper:2181",
     "KAFKA_ADVERTISED_LISTENERS": "PLAINTEXT://localhost:9092",
     "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR": 1
   },
@@ -28,5 +28,21 @@
   "grafana": {
     "GF_SECURITY_ADMIN_USER": "admin",
     "GF_SECURITY_ADMIN_PASSWORD": "admin"
+  },
+  "simulation": {
+    "dt": [0.01, 0.02, 0.05],
+    "tend": [10.0, 20.0],
+    "materials": {
+      "poisson_ratios": [0.3, 0.25],
+      "young_moduli": [200000000000, 150000000000],
+      "densities": [7850, 2700]
+    },
+    "linear_strings": ["param1", "param2", "param3"],
+    "models": {
+      "model_type_a": ["ModelA1", "ModelA2"],
+      "model_type_b": ["ModelB1", "ModelB2"]
+    },
+    "apply_force": [100.0, 150.0, 200.0],
+    "movement_types": ["linear", "rotational"]
   }
 }
