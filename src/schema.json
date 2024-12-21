@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Application Configuration Schema",
+  "type": "object",
+  "properties": {
+    "database_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL for the database connection."
+    },
+    "api_key": {
+      "type": "string",
+      "description": "API key for accessing external services."
+    },
+    "debug": {
+      "type": "boolean",
+      "description": "Flag to enable or disable debug mode."
+    },
+    "minio": {
+      "type": "object",
+      "properties": {
+        "MINIO_ROOT_USER": {
+          "type": "string",
+          "description": "Root username for MinIO."
+        },
+        "MINIO_ROOT_PASSWORD": {
+          "type": "string",
+          "description": "Root password for MinIO."
+        },
+        "MINIO_PROMETHEUS_AUTH_TYPE": {
+          "type": "string",
+          "enum": ["public", "private"],
+          "description": "Authentication type for MinIO Prometheus."
+        }
+      },
+      "required": ["MINIO_ROOT_USER", "MINIO_ROOT_PASSWORD", "MINIO_PROMETHEUS_AUTH_TYPE"],
+      "additionalProperties": false
+    },
+    "zookeeper": {
+      "type": "object",
+      "properties": {
+        "ZOOKEEPER_CLIENT_PORT": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Client port for Zookeeper."
+        },
+        "ZOOKEEPER_TICK_TIME": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tick time for Zookeeper in milliseconds."
+        }
+      },
+      "required": ["ZOOKEEPER_CLIENT_PORT", "ZOOKEEPER_TICK_TIME"],
+      "additionalProperties": false
+    },
+    "kafka": {
+      "type": "object",
+      "properties": {
+        "KAFKA_BROKER_ID": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Broker ID for Kafka."
+        },
+        "KAFKA_ZOOKEEPER_CONNECT": {
+          "type": "string",
+          "format": "uri",
+          "description": "Zookeeper connection string for Kafka."
+        },
+        "KAFKA_ADVERTISED_LISTENERS": {
+          "type": "string",
+          "pattern": "^PLAINTEXT://[\\w.-]+:\\d+$",
+          "description": "Advertised listeners for Kafka."
+        },
+        "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Replication factor for Kafka offsets topic."
+        }
+      },
+      "required": [
+        "KAFKA_BROKER_ID",
+        "KAFKA_ZOOKEEPER_CONNECT",
+        "KAFKA_ADVERTISED_LISTENERS",
+        "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR"
+      ],
+      "additionalProperties": false
+    },
+    "mongo": {
+      "type": "object",
+      "properties": {
+        "MONGO_INITDB_ROOT_USERNAME": {
+          "type": "string",
+          "description": "Root username for MongoDB."
+        },
+        "MONGO_INITDB_ROOT_PASSWORD": {
+          "type": "string",
+          "description": "Root password for MongoDB."
+        }
+      },
+      "required": ["MONGO_INITDB_ROOT_USERNAME", "MONGO_INITDB_ROOT_PASSWORD"],
+      "additionalProperties": false
+    },
+    "qdrant": {
+      "type": "object",
+      "properties": {
+        "QDRANT__SERVICE__HTTP_PORT": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "HTTP port for Qdrant service."
+        },
+        "QDRANT__COLLECTIONS__DEFAULT__NAME": {
+          "type": "string",
+          "description": "Default collection name for Qdrant."
+        }
+      },
+      "required": ["QDRANT__SERVICE__HTTP_PORT", "QDRANT__COLLECTIONS__DEFAULT__NAME"],
+      "additionalProperties": false
+    },
+    "grafana": {
+      "type": "object",
+      "properties": {
+        "GF_SECURITY_ADMIN_USER": {
+          "type": "string",
+          "description": "Admin username for Grafana."
+        },
+        "GF_SECURITY_ADMIN_PASSWORD": {
+          "type": "string",
+          "description": "Admin password for Grafana."
+        }
+      },
+      "required": ["GF_SECURITY_ADMIN_USER", "GF_SECURITY_ADMIN_PASSWORD"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "database_url",
+    "api_key",
+    "debug",
+    "minio",
+    "zookeeper",
+    "kafka",
+    "mongo",
+    "qdrant",
+    "grafana"
+  ],
+  "additionalProperties": false
+}
