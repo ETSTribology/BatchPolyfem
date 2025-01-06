@@ -1,0 +1,4 @@
+pip install typer[all]
+pip install rich
+pip install noise
+pip install minio
