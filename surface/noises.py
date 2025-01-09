@@ -9,9 +9,11 @@ import math
 import logging
 from rich.console import Console
 from rich.logging import RichHandler
+from itertools import product
 
 import numpy as np
 import noise
+from scipy.stats import qmc
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +27,36 @@ console = Console()
 
 
 # ------------------------------------------------------------------------
+# Helper Functions
+# ------------------------------------------------------------------------
+
+def radical_inverse(index, base):
+    """
+    Compute the radical inverse of an index in a given base.
+
+    Parameters:
+    -----------
+    index : int
+        The index of the sequence.
+    base  : int
+        The base for the radical inverse.
+
+    Returns:
+    --------
+    float
+        Radical inverse of the index in the specified base.
+    """
+    inverse = 0.0
+    f = 1.0 / base
+    i = index
+    while i > 0:
+        inverse += f * (i % base)
+        i = i // base
+        f /= base
+    return inverse
+
+
+# ------------------------------------------------------------------------
 # 2D/3D Spatial Noise Functions
 # ------------------------------------------------------------------------
 
@@ -34,7 +66,7 @@ def sine_noise(x, y, frequency=10.0, amplitude=1.0):
 
     Parameters:
     -----------
-    x, y       : float
+    x, y       : float or np.ndarray
         2D coordinates (y is unused in this function).
     frequency  : float
         Controls the number of wave cycles per unit in x.
@@ -43,32 +75,40 @@ def sine_noise(x, y, frequency=10.0, amplitude=1.0):
 
     Returns:
     --------
-    float
+    float or np.ndarray
         Noise value at (x, y).
     """
-    return amplitude * math.sin(frequency * x)
+    return amplitude * np.sin(frequency * x)
 
-def square_noise(x, y, frequency=10.0, amplitude=1.0):
+
+def square_noise(x, y, frequency=10.0, amplitude=1.0, duty_cycle=0.5):
     """
-    Simple square wave derived from a sine wave sign.
+    Vectorized Square wave with a specified duty cycle.
 
     Parameters:
     -----------
-    x, y       : float
-        2D coordinates (y is unused).
-    frequency  : float
-        Controls the wave frequency in x.
-    amplitude  : float
+    x, y        : float or np.ndarray
+        2D coordinates (y is unused in this function).
+    frequency   : float
+        Controls the wave frequency in x (cycles per unit).
+    amplitude   : float
         Scales the resulting wave.
+    duty_cycle  : float
+        Fraction of the period where the wave is positive (0 < duty_cycle < 1).
 
     Returns:
     --------
-    float
-        +amplitude or -amplitude at each (x, y).
+    float or np.ndarray
+        +amplitude during the positive phase, -amplitude otherwise.
     """
-    return amplitude * np.sign(math.sin(frequency * x))
+    if not (0.0 < duty_cycle < 1.0):
+        raise ValueError("duty_cycle must be between 0 and 1.")
 
-def fbm_noise(x, y, z=0.0, octaves=4, persistence=0.5, lacunarity=2.0):
+    phase = (frequency * x) % 1.0
+    return np.where(phase < duty_cycle, amplitude, -amplitude)
+
+
+def fbm_noise(x, y, z=0.0, scale=1.0, octaves=4, persistence=0.5, lacunarity=2.0):
     """
     Fractal Brownian Motion (fBm) using Perlin noise internally (pnoise3).
 
@@ -79,6 +119,8 @@ def fbm_noise(x, y, z=0.0, octaves=4, persistence=0.5, lacunarity=2.0):
     -----------
     x, y, z    : float
         3D coordinates (z can be used as time or extra dimension).
+    scale      : float
+        Scales the input coordinates to control the frequency of the noise.
     octaves    : int
         Number of layers of noise to sum.
     persistence: float
@@ -95,10 +137,11 @@ def fbm_noise(x, y, z=0.0, octaves=4, persistence=0.5, lacunarity=2.0):
     amplitude = 1.0
     frequency = 1.0
     for _ in range(octaves):
-        value += amplitude * noise.pnoise3(x * frequency, y * frequency, z * frequency)
+        value += amplitude * noise.pnoise3(x * frequency * scale, y * frequency * scale, z * frequency * scale)
         amplitude *= persistence
         frequency *= lacunarity
     return value
+
 
 def fractal_noise(x, y, **kwargs):
     """
@@ -106,27 +149,319 @@ def fractal_noise(x, y, **kwargs):
     """
     return fbm_noise(x, y, **kwargs)
 
-def perlin_noise(x, y, z=0.0, scale=1.0):
+def worley_noise(x, y, z=0.0, scale=1.0, num_features=10):
     """
-    Basic Perlin noise (from 'noise' library).
+    Worley (Cellular) noise based on distance to nearest feature point.
 
     Parameters:
     -----------
-    x, y, z : float
+    x, y, z    : float
         3D coordinates.
-    scale   : float
-        Scales input coordinates for different zoom levels.
+    scale      : float
+        Scales the input coordinates.
+    num_features: int
+        Number of feature points to consider.
 
     Returns:
     --------
     float
-        Perlin noise value at (x, y, z).
+        Worley noise value at (x, y, z).
     """
-    return noise.pnoise3(x * scale, y * scale, z * scale)
+    min_dist = float('inf')
+    for _ in range(num_features):
+        # Randomly place feature points within the grid cell
+        fx = noise.pnoise3(x * scale, y * scale, z * scale, repeatx=1024, repeaty=1024, repeatz=1024)
+        fy = noise.pnoise3((x * scale) + 100, (y * scale) + 100, (z * scale) + 100, repeatx=1024, repeaty=1024, repeatz=1024)
+        fz = noise.pnoise3((x * scale) + 200, (y * scale) + 200, (z * scale) + 200, repeatx=1024, repeaty=1024, repeatz=1024)
+        # Scale feature points to [0, 1]
+        fx = (fx + 1) / 2.0
+        fy = (fy + 1) / 2.0
+        fz = (fz + 1) / 2.0
+        # Compute distance to feature point
+        dist = math.sqrt((x * scale - fx) ** 2 + (y * scale - fy) ** 2 + (z * scale - fz) ** 2)
+        if dist < min_dist:
+            min_dist = dist
+    return min_dist
 
-def gabor_noise(x, y, frequency=5.0, sigma=0.2):
+
+def wavelet_noise(x, y, z=0.0, scale=1.0, octaves=4, persistence=0.5, lacunarity=2.0):
     """
-    Simplified Gabor-like noise: a Gaussian envelope multiplied by a sinusoid.
+    Wavelet-based noise using Perlin noise and wavelet transformations.
+
+    Parameters:
+    -----------
+    x, y, z    : float
+        3D coordinates.
+    scale      : float
+        Scales the input coordinates.
+    octaves    : int
+        Number of noise layers.
+    persistence: float
+        Amplitude reduction per octave.
+    lacunarity : float
+        Frequency increase per octave.
+
+    Returns:
+    --------
+    float
+        Wavelet-based noise value at (x, y, z).
+    """
+    sum = 0.0
+    frequency = 1.0
+    amplitude = 1.0
+
+    for _ in range(octaves):
+        n = noise.pnoise3(x * frequency * scale, y * frequency * scale, z * frequency * scale)
+        # Apply a wavelet transformation (e.g., Haar wavelet)
+        n = abs(n)
+        sum += amplitude * n
+        frequency *= lacunarity
+        amplitude *= persistence
+
+    return sum
+
+def white_noise(x, y, z=0.0, scale=1.0, seed=0):
+    """
+    White noise with no correlation between values.
+
+    Parameters:
+    -----------
+    x, y, z    : float
+        3D coordinates.
+    scale      : float
+        Scales the input coordinates.
+    seed       : int
+        Seed for random number generation.
+
+    Returns:
+    --------
+    float
+        White noise value at (x, y, z).
+    """
+    rng = np.random.default_rng(seed + int(x * scale) * 10000 + int(y * scale) * 10000 + int(z * scale))
+    return rng.uniform(-1.0, 1.0)
+
+
+def domain_warp_noise(x, y, z=0.0, scale=1.0, warp_scale=0.5, octaves=2, persistence=0.5, lacunarity=2.0):
+    """
+    Domain warping using multiple layers of Perlin noise.
+
+    Parameters:
+    -----------
+    x, y, z      : float
+        3D coordinates.
+    scale        : float
+        Scales the input coordinates.
+    warp_scale   : float
+        Scales the warping noise.
+    octaves      : int
+        Number of noise layers for warping.
+    persistence  : float
+        Amplitude reduction per octave for warping.
+    lacunarity   : float
+        Frequency increase per octave for warping.
+
+    Returns:
+    --------
+    float
+        Domain-warped noise value at (x, y, z).
+    """
+    warp_x = noise.pnoise3(x * warp_scale * scale, y * warp_scale * scale, z * warp_scale * scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
+    warp_y = noise.pnoise3(x * warp_scale * scale + 100, y * warp_scale * scale + 100, z * warp_scale * scale + 100, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
+    
+    return noise.pnoise3((x + warp_x) * scale, (y + warp_y) * scale, z * scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
+
+def diamond_square_noise(x, y, z=0.0, scale=1.0, size=256, roughness=0.5):
+    """
+    Diamond-Square noise for generating heightmaps.
+
+    Parameters:
+    -----------
+    x, y, z      : float
+        3D coordinates (z can be used for multiple heightmaps).
+    scale        : float
+        Scales the input coordinates.
+    size         : int
+        Size of the grid (must be 2^n + 1).
+    roughness    : float
+        Controls the roughness of the terrain.
+
+    Returns:
+    --------
+    float
+        Height value at (x, y, z).
+    """
+    # Initialize grid
+    grid_size = size
+    grid = np.zeros((grid_size, grid_size), dtype=np.float32)
+    
+    # Seed corners
+    grid[0, 0] = np.random.uniform(-1, 1)
+    grid[0, -1] = np.random.uniform(-1, 1)
+    grid[-1, 0] = np.random.uniform(-1, 1)
+    grid[-1, -1] = np.random.uniform(-1, 1)
+    
+    step_size = grid_size - 1
+    scale_factor = roughness
+    
+    while step_size > 1:
+        half_step = step_size // 2
+        
+        # Diamond step
+        for i in range(half_step, grid_size - 1, step_size):
+            for j in range(half_step, grid_size - 1, step_size):
+                avg = (grid[i - half_step, j - half_step] +
+                       grid[i - half_step, j + half_step] +
+                       grid[i + half_step, j - half_step] +
+                       grid[i + half_step, j + half_step]) / 4.0
+                grid[i, j] = avg + np.random.uniform(-scale_factor, scale_factor)
+        
+        # Square step
+        for i in range(0, grid_size, half_step):
+            for j in range((i + half_step) % step_size, grid_size, step_size):
+                s = []
+                if i - half_step >= 0:
+                    s.append(grid[i - half_step, j])
+                if i + half_step < grid_size:
+                    s.append(grid[i + half_step, j])
+                if j - half_step >= 0:
+                    s.append(grid[i, j - half_step])
+                if j + half_step < grid_size:
+                    s.append(grid[i, j + half_step])
+                avg = np.mean(s)
+                grid[i, j] = avg + np.random.uniform(-scale_factor, scale_factor)
+        
+        step_size = half_step
+        scale_factor *= roughness
+    
+    # Normalize grid to [-1, 1]
+    grid = (grid - grid.min()) / (grid.max() - grid.min()) * 2.0 - 1.0
+    
+    # Interpolate the value at (x, y)
+    xi = x * (grid_size - 1)
+    yi = y * (grid_size - 1)
+    x0 = int(math.floor(xi))
+    y0 = int(math.floor(yi))
+    x1 = min(x0 + 1, grid_size - 1)
+    y1 = min(y0 + 1, grid_size - 1)
+    
+    dx = xi - x0
+    dy = yi - y0
+    
+    value = (grid[x0, y0] * (1 - dx) * (1 - dy) +
+             grid[x1, y0] * dx * (1 - dy) +
+             grid[x0, y1] * (1 - dx) * dy +
+             grid[x1, y1] * dx * dy)
+    
+    return value
+
+
+def turbulence_noise(x, y, z=0.0, scale=1.0, octaves=5, persistence=0.5, lacunarity=2.0):
+    """
+    Turbulence noise by summing absolute values of Perlin noise layers.
+
+    Parameters:
+    -----------
+    x, y, z      : float
+        3D coordinates.
+    scale        : float
+        Scales the input coordinates.
+    octaves      : int
+        Number of noise layers.
+    persistence  : float
+        Amplitude reduction per octave.
+    lacunarity   : float
+        Frequency increase per octave.
+
+    Returns:
+    --------
+    float
+        Turbulence noise value at (x, y, z).
+    """
+    sum = 0.0
+    frequency = 1.0
+    amplitude = 1.0
+
+    for _ in range(octaves):
+        n = noise.pnoise3(x * frequency * scale, y * frequency * scale, z * frequency * scale)
+        sum += abs(n) * amplitude
+        frequency *= lacunarity
+        amplitude *= persistence
+
+    return sum
+
+
+def ridged_multifractal_noise(x, y, z=0.0, scale=1.0, octaves=6, lacunarity=2.0, gain=0.5):
+    """
+    Ridged multifractal noise using Perlin noise.
+
+    Parameters:
+    -----------
+    x, y, z    : float
+        3D coordinates.
+    scale      : float
+        Scales the input coordinates.
+    octaves    : int
+        Number of noise layers.
+    lacunarity : float
+        Frequency increase per octave.
+    gain       : float
+        Controls the sharpness of ridges.
+
+    Returns:
+    --------
+    float
+        Ridged multifractal noise value at (x, y, z).
+    """
+    sum = 0.0
+    frequency = 1.0
+    amplitude = 1.0
+    weight = 1.0
+
+    for _ in range(octaves):
+        n = noise.pnoise3(x * frequency * scale, y * frequency * scale, z * frequency * scale)
+        n = 1.0 - abs(n)  # Invert to create ridges
+        n *= n  # Square to increase contrast
+        n *= weight
+        sum += n * amplitude
+
+        weight = n * gain
+        weight = max(min(weight, 1.0), 0.0)  # Clamp between 0 and 1
+
+        frequency *= lacunarity
+        amplitude *= gain
+
+    return sum
+
+
+def perlin_noise(x, y, z=0.0, scale=1.0, octaves=1, persistence=0.5, lacunarity=2.0):
+    """
+    Basic Perlin noise (from 'noise' library) with support for multiple octaves.
+    """
+    # Validate parameters
+    if not isinstance(scale, (int, float)) or scale <= 0:
+        raise ValueError(f"scale must be a positive float, got {scale}")
+    if not isinstance(octaves, int) or octaves <= 0:
+        raise ValueError(f"octaves must be a positive integer, got {octaves}")
+    if not isinstance(persistence, (int, float)) or not (0 < persistence < 1):
+        raise ValueError(f"persistence must be between 0 and 1, got {persistence}")
+    if not isinstance(lacunarity, (int, float)) or lacunarity <= 0:
+        raise ValueError(f"lacunarity must be a positive float, got {lacunarity}")
+
+    return noise.pnoise3(
+        x * scale,
+        y * scale,
+        z * scale,
+        octaves=octaves,
+        persistence=persistence,
+        lacunarity=lacunarity
+    )
+
+
+
+def gabor_noise(x, y, frequency=5.0, theta=0.0, sigma_x=1.0, sigma_y=1.0, offset=0.0):
+    """
+    Gabor-like noise: a Gaussian envelope multiplied by a sinusoid.
 
     Parameters:
     -----------
@@ -134,17 +469,26 @@ def gabor_noise(x, y, frequency=5.0, sigma=0.2):
         2D coordinates.
     frequency : float
         Frequency of the sinusoid.
-    sigma     : float
-        Std. dev. of the Gaussian envelope.
+    theta     : float
+        Orientation of the sinusoid in degrees.
+    sigma_x   : float
+        Standard deviation of the Gaussian envelope in x.
+    sigma_y   : float
+        Standard deviation of the Gaussian envelope in y.
+    offset    : float
+        Phase offset of the sinusoid.
 
     Returns:
     --------
     float
         Gabor-like noise at (x, y).
     """
-    gauss = math.exp(-((x**2 + y**2) / (2.0 * sigma**2)))
-    wave = math.cos(2.0 * math.pi * frequency * x)
+    theta_rad = math.radians(theta)
+    x_rot = x * math.cos(theta_rad) + y * math.sin(theta_rad)
+    gauss = math.exp(-((x_rot**2) / (2.0 * sigma_x**2) + (y**2) / (2.0 * sigma_y**2)))
+    wave = math.cos(2.0 * math.pi * frequency * x_rot + offset)
     return gauss * wave
+
 
 def simple_3d_noise(x, y, t=0.0, scale=0.5):
     """
@@ -165,6 +509,7 @@ def simple_3d_noise(x, y, t=0.0, scale=0.5):
         3D Perlin noise value at (x, y, t).
     """
     return noise.pnoise3(x * scale, y * scale, t)
+
 
 def mandelbrot_noise(x, y, L=10.0, D_f=1.5, gamma=1.2, M=10, N_max=10, rng=None):
     """
@@ -220,87 +565,332 @@ def mandelbrot_noise(x, y, L=10.0, D_f=1.5, gamma=1.2, M=10, N_max=10, rng=None)
 
 
 # ------------------------------------------------------------------------
-# Microfacet Distribution Functions (for advanced 2D patterns)
+# Additional Noise Functions
 # ------------------------------------------------------------------------
 
-def beckmann_noise_alt(x, y, alpha=0.5):  # Renamed function
+def random_walk_noise(x, y, scale=1.0, step_size=1.0, seed=0):
     """
-    Beckmann microfacet distribution function (D-term).
+    Simulated Random Walk Noise.
 
-    Interprets (x, y) as slopes in a local tangent space.
+    Generates noise resembling a random walk by accumulating pseudo-random steps
+    based on the grid position.
+
+    Parameters:
+    -----------
+    x, y        : float
+        2D coordinates.
+    scale       : float
+        Scales input coordinates to control the frequency of the noise.
+    step_size   : float
+        Size of each random step.
+    seed        : int
+        Seed for the random number generator to ensure reproducibility.
+
+    Returns:
+    --------
+    float
+        Random walk noise value at (x, y).
     """
-    r2 = x**2 + y**2
-    if r2 < 1e-12:
-        return 1.0  # avoid dividing by zero near the center
+    if not isinstance(step_size, (int, float)):
+        raise ValueError(f"step_size must be a non-negative float, got {type(step_size)}")
+    if step_size < 0:
+        raise ValueError("step_size must be non-negative")
 
-    tan2_theta = r2 / (alpha**2)
-    cos2_theta = 1.0 / (1.0 + tan2_theta)
-    cos4_theta = cos2_theta * cos2_theta
-
-    # D ~ exp(-tan^2(θ) / alpha^2) / (π α^2 cos^4(θ))
-    return math.exp(-tan2_theta) / (math.pi * alpha**2 * cos4_theta)
-
-def ggx_noise_alt(x, y, alpha=0.5):  # Renamed function
-    """
-    GGX (Trowbridge-Reitz) microfacet distribution function (D-term).
-
-    Interprets (x, y) as slopes in local tangent space.
-    """
-    r2 = x**2 + y**2
-    if r2 < 1e-12:
-        return 1.0
-
-    tan2_theta = r2 / (alpha**2)
-    cos2_theta = 1.0 / (1.0 + tan2_theta)
-    cos4_theta = cos2_theta * cos2_theta
-
-    denom = (alpha**2 + r2)**2
-    return (alpha**2) / (math.pi * cos4_theta * denom)
-
-
-# ------------------------------------------------------------------------
-# Alternate Beckmann/GGX Versions
-# ------------------------------------------------------------------------
-
-def beckmann_noise_alt(mx, my, alpha=0.5):
-    """
-    Alternate version of Beckmann microfacet distribution D(m).
-    """
-    r2 = mx*mx + my*my
-    cos2theta = 1.0 / (1.0 + r2)
-    if cos2theta <= 0:
+    rng = np.random.default_rng(seed + int(x * scale) * 10000 + int(y * scale))
+    steps = int(math.hypot(x, y) * scale)
+    if steps == 0:
         return 0.0
-    cos4theta = cos2theta * cos2theta
-    exponent = -r2 / (alpha*alpha)
-    return math.exp(exponent) / (math.pi * alpha*alpha * cos4theta)
+    directions = rng.uniform(0, 2 * math.pi, steps)
+    displacement = np.sum(step_size * (np.cos(directions) + np.sin(directions)))
+    return displacement
 
-def ggx_noise_alt(mx, my, alpha=0.5):
+
+def ornstein_uhlenbeck_noise(x, y, theta=0.15, mu=0.0, sigma=0.3, scale=1.0):
     """
-    Alternate version of GGX microfacet distribution D(m).
+    Ornstein-Uhlenbeck Noise.
+
+    Generates mean-reverting noise based on the Ornstein-Uhlenbeck process.
+
+    Parameters:
+    -----------
+    x, y     : float
+        2D coordinates.
+    theta    : float
+        Speed of mean reversion.
+    mu       : float
+        Long-term mean value.
+    sigma    : float
+        Volatility parameter.
+    scale    : float
+        Scales input coordinates to control the frequency of the noise.
+
+    Returns:
+    --------
+    float
+        Ornstein-Uhlenbeck noise value at (x, y).
     """
-    r2 = mx*mx + my*my
-    cos2theta = 1.0 / (1.0 + r2)
-    if cos2theta <= 0:
+    # Use Perlin noise as the driving noise
+    driving_noise = noise.pnoise3(x * scale, y * scale, 0.0)
+    # Mean-reverting equation: dX = theta*(mu - X)*dt + sigma*dW
+    # Discretized for a grid
+    # Since we don't have state, approximate with a damped noise
+    return theta * (mu - driving_noise) + sigma * driving_noise
+
+
+def vasicek_noise(x, y, alpha=0.1, beta=0.1, sigma=0.1, scale=1.0):
+    """
+    Vasicek Noise.
+
+    Generates noise based on the Vasicek model, commonly used in financial applications
+    for interest rate modeling. It is similar to the Ornstein-Uhlenbeck process.
+
+    Parameters:
+    -----------
+    x, y     : float
+        2D coordinates.
+    alpha    : float
+        Speed of mean reversion.
+    beta     : float
+        Long-term mean.
+    sigma    : float
+        Volatility parameter.
+    scale    : float
+        Scales input coordinates to control the frequency of the noise.
+
+    Returns:
+    --------
+    float
+        Vasicek noise value at (x, y).
+    """
+    # Use Perlin noise as the driving noise
+    driving_noise = noise.pnoise3(x * scale, y * scale, 0.0)
+    # Mean-reverting equation: dr = alpha*(beta - r)*dt + sigma*dW
+    # Discretized for a grid
+    # Approximate with a damped noise similar to Ornstein-Uhlenbeck
+    return alpha * (beta - driving_noise) + sigma * driving_noise
+
+
+def blue_noise(x, y, scale=1.0, seed=0):
+    """
+    Blue Noise.
+
+    Generates noise with minimal low-frequency components and maximized high-frequency content,
+    resembling blue noise patterns. This is an approximation suitable for procedural textures.
+
+    Parameters:
+    -----------
+    x, y     : float
+        2D coordinates.
+    scale    : float
+        Scales input coordinates to control the frequency of the noise.
+    seed     : int
+        Seed for the random number generator to ensure reproducibility.
+
+    Returns:
+    --------
+    float
+        Blue noise value at (x, y).
+    """
+    # High-pass filter approximation using Perlin noise
+    low_freq = noise.pnoise3(x * scale * 0.5, y * scale * 0.5, 0.0)
+    high_freq = noise.pnoise3(x * scale * 2.0, y * scale * 2.0, 0.0)
+    return high_freq - low_freq
+
+
+def halton_noise(x, y, base1=2, base2=3):
+    """
+    Generate noise based on the Halton sequence.
+
+    Parameters:
+    -----------
+    x, y    : float
+        2D coordinates, typically integer indices.
+    base1   : int
+        Base for the first dimension (default: 2).
+    base2   : int
+        Base for the second dimension (default: 3).
+
+    Returns:
+    --------
+    float
+        Halton sequence-based noise value at (x, y).
+    """
+    index = int(x) + int(y) * 10000  # Example index mapping
+    seq1 = radical_inverse(index, base1)
+    seq2 = radical_inverse(index, base2)
+    # Combine the two dimensions, e.g., average or sum
+    return (seq1 + seq2) / 2.0
+
+
+def hammersley_noise(x, y, base=2, total_samples=100000):
+    """
+    Generate noise based on the Hammersley sequence.
+
+    Parameters:
+    -----------
+    x, y          : float
+        2D coordinates, typically integer indices.
+    base          : int
+        Base for the second dimension (default: 2).
+    total_samples : int
+        Total number of samples in the sequence (default: 100,000).
+
+    Returns:
+    --------
+    float
+        Hammersley sequence-based noise value at (x, y).
+    """
+    index = int(x) + int(y) * 10000  # Example index mapping
+    seq1 = index / total_samples  # Normalized index
+    seq2 = radical_inverse(index, base)
+    return (seq1 + seq2) / 2.0
+
+
+def sobol_noise(x, y, scramble=False, seed=None):
+    """
+    Generate noise based on the Sobol sequence.
+
+    Parameters:
+    -----------
+    x, y     : float
+        2D coordinates, typically integer indices.
+    scramble : bool
+        Whether to scramble the sequence for better randomness (default: False).
+    seed     : int or None
+        Seed for scrambling (default: None).
+
+    Returns:
+    --------
+    float
+        Sobol sequence-based noise value at (x, y).
+    """
+    sampler = qmc.Sobol(d=2, scramble=scramble, seed=seed)
+    index = int(x) + int(y) * 10000  # Example index mapping
+
+    # Since scipy's Sobol does not support jumping to an arbitrary index directly,
+    # we generate the required number of samples up to the desired index.
+    # Note: This can be inefficient for large indices.
+
+    try:
+        # Determine the number of bits needed to represent the index
+        bits = int(math.ceil(math.log2(index + 1))) if index > 0 else 1
+        m = bits
+        sampler.reset()
+        samples = sampler.random_base2(m=m)
+        if index < len(samples):
+            sample = samples[index]
+        else:
+            # Generate additional samples as needed
+            additional_bits = int(math.ceil(math.log2(index + 1 - len(samples))))
+            additional_samples = sampler.random_base2(m=additional_bits)
+            sample = additional_samples[-1]
+    except Exception as e:
+        logger.error(f"Sobol sequence generation failed at index {index}: {e}")
         return 0.0
-    cos4theta = cos2theta * cos2theta
-    denom = (alpha*alpha + r2)
-    return (alpha*alpha) / (math.pi * cos4theta * denom*denom)
+
+    # Combine the two dimensions, e.g., average or sum
+    return np.sum(sample) / len(sample)
 
 
-# ------------------------------------------------------------------------
-# Usage Example (Generate a small 2D array):
-# ------------------------------------------------------------------------
-if __name__ == "__main__":
-    # Quick demo of generating a 2D displacement map with Perlin noise
-    map_size = 16
-    displacement_map = np.zeros((map_size, map_size))
-
-    for i in range(map_size):
-        for j in range(map_size):
-            # Convert (i, j) into normalized coordinates for demonstration
-            x = i / map_size * 2.0 - 1.0
-            y = j / map_size * 2.0 - 1.0
-            displacement_map[i, j] = perlin_noise(x, y, scale=2.0)
-
-    logger.info("Sample 2D Perlin noise map (16x16):")
-    logger.info(displacement_map)
+# Define noise functions mapping with their parameters
+noise_variations = {
+    "sine": [
+        (sine_noise, {"amplitude": amp, "frequency": freq})
+        for amp, freq in product(
+            [0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 50.0, 100.0],
+            [15.0, 20.0, 30.0, 50.0, 100.0, 200.0, 300.0, 1000.0]
+        )
+    ],
+    "square": [
+    (square_noise, {"amplitude": amp, "frequency": freq, "duty_cycle": duty})
+        for amp, freq, duty in product(
+            [2.0, 3.0, 5.0, 10.0, 50.0, 100.0],  # Amplitude: Controls the height of the wave
+            [1.0, 2.0, 5.0, 8.0, 10.0, 20.0, 50.0, 100.0],  # Frequency: Controls the number of cycles per unit
+            [0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]  # Duty cycle: Fraction of the period the signal is high
+        )
+    ],
+    "perlin": [
+        (perlin_noise, {"scale": scale, "octaves": octaves, "persistence": persistence, "lacunarity": lacunarity})
+        for scale, octaves, persistence, lacunarity in product(
+            [0.5, 0.8, 1.0, 1.5, 2.0],  # Scale
+            [2, 3, 4, 5],  # Octaves
+            [0.3, 0.5, 0.6],  # Persistence
+            [1.5, 2.0, 2.5]  # Lacunarity
+        )
+    ],
+    "fbm": [
+        (fbm_noise, {"scale": scale, "octaves": octaves, "persistence": persistence, "lacunarity": lacunarity})
+        for scale, octaves, persistence, lacunarity in product(
+            [0.5, 0.8, 1.0, 1.2, 1.5],  # Scale
+            [3, 4, 5, 6],  # Octaves
+            [0.3, 0.5, 0.6],  # Persistence
+            [1.5, 2.0, 2.5]  # Lacunarity
+        )
+    ],
+    "gabor": [
+        (gabor_noise, {"frequency": freq, "theta": theta, "sigma_x": sigma_x, "sigma_y": sigma_y, "offset": offset})
+        for freq, theta, sigma_x, sigma_y, offset in product(
+            [3.0, 5.0, 7.0, 10.0],  # Frequency
+            [15, 30, 45, 60, 90],  # Theta
+            [0.5, 1.0, 1.5],  # Sigma X
+            [0.5, 1.0, 1.5],  # Sigma Y
+            [0.0, 0.5, 1.0]  # Offset
+        )
+    ],
+    "random_walk": [
+        (random_walk_noise, {"scale": scale, "step_size": step, "seed": seed})
+        for scale, step, seed in product(
+            [0.5, 1.0, 1.5],  # Scale
+            [0.05, 0.1, 0.2],  # Step size
+            [7, 24, 42]  # Seed
+        )
+    ],
+    "ornstein_uhlenbeck": [
+        (ornstein_uhlenbeck_noise, {"theta": theta, "mu": mu, "sigma": sigma, "scale": scale})
+        for theta, mu, sigma, scale in product(
+            [0.1, 0.15, 0.2],  # Theta
+            [-0.1, 0.0, 0.1],  # Mu
+            [0.25, 0.3, 0.35],  # Sigma
+            [0.8, 1.0, 1.2]  # Scale
+        )
+    ],
+    "vasicek": [
+        (vasicek_noise, {"alpha": alpha, "beta": beta, "sigma": sigma, "scale": scale})
+        for alpha, beta, sigma, scale in product(
+            [0.1, 0.15, 0.2],  # Alpha
+            [0.05, 0.1, 0.15],  # Beta
+            [0.05, 0.1, 0.15],  # Sigma
+            [0.9, 1.0, 1.1]  # Scale
+        )
+    ],
+    "blue_noise": [
+        (blue_noise, {"scale": scale, "seed": seed})
+        for scale, seed in product(
+            [10, 15, 20],  # Scale
+            [0, 1, 2]  # Seed
+        )
+    ],
+    "halton": [
+        (halton_noise, {"base1": base1, "base2": base2})
+        for base1, base2 in product([2, 3, 5], [3, 5, 7])
+    ],
+    "wavelet": [
+        (wavelet_noise, {"scale": scale, "octaves": octaves, "persistence": persistence, "lacunarity": lacunarity})
+        for scale, octaves, persistence, lacunarity in product(
+            [0.7, 1.0, 1.3],  # Scale
+            [3, 4, 5],  # Octaves
+            [0.4, 0.5, 0.6],  # Persistence
+            [1.5, 2.0, 2.5]  # Lacunarity
+        )
+    ],
+    "domain_warp": [
+        (domain_warp_noise, {"scale": scale, "warp_scale": warp_scale, "octaves": octaves, "persistence": persistence, "lacunarity": lacunarity})
+        for scale, warp_scale, octaves, persistence, lacunarity in product(
+            [0.8, 1.0, 1.2],  # Scale
+            [0.3, 0.5, 0.7],  # Warp scale
+            [2, 3, 4],  # Octaves
+            [0.4, 0.5, 0.6],  # Persistence
+            [1.8, 2.0, 2.5]  # Lacunarity
+        )
+    ],
+}

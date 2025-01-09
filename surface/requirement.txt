@@ -1,4 +1,13 @@
-pip install typer[all]
-pip install rich
-pip install noise
-pip install minio
+typer[all]
+rich
+noise
+minio
+ray
+tqdm
+meshio
+pandas
+plotly
+numpy
+scipy
+scikit-learn
+matplotlib

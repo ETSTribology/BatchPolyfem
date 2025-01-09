@@ -3,34 +3,53 @@
 generate.py
 
 Demonstration script that:
-1) Generates 2D displacement maps from various noise functions.
+1) Generates 2D displacement maps from various noise functions or scan images.
 2) Converts displacement PNG -> STL using 'hmm'.
 3) Runs fTetWild on that STL to produce a tetrahedral mesh (.msh).
 4) Uploads all results to MinIO.
+5) Collects and uploads metadata as JSON to MinIO.
 
-Now enhanced to STOP immediately if any error occurs.
+Enhanced to STOP immediately if any error occurs, organizes files into noise-specific folders,
+ensures precise naming based on all parameters, skips generating/uploading existing files,
+adds rebuild features, utilizes threading for tetrahedral mesh processing,
+and includes random rotation in scan image processing mapped to original scan size.
 """
 
+from datetime import datetime
 import os
+import sys
 import tempfile
 import logging
 import subprocess
 import typer
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from random import uniform
 
+import numpy as np
+from PIL import Image
 from rich.console import Console
 from rich.logging import RichHandler
+from tqdm import tqdm
 
 from minio import Minio, S3Error
 
-# Local imports (assuming these files exist in the same directory)
+# Local imports
 from displacement import generate_displacement_map, save_displacement_map
-from noises import (
-    sine_noise, square_noise, perlin_noise,
-    fbm_noise, fractal_noise, gabor_noise,
+from noises import noise_variations
+from storage import (
+    REQUIRED_BUCKETS,
+    setup_minio_client,
+    ensure_bucket_exists,
+    upload_file_to_minio,
+    check_file_exists_in_minio,
+    list_scan_images,
+    download_scan_image,
+    build_filename
 )
 from hmm import run_hmm
 from tetrahedron import run_ftetwild
-from storage import setup_minio_client
+from stats import collect_and_upload_metadata
 
 ###############################################################################
 # Configure Logging
@@ -47,153 +66,429 @@ console = Console()
 ###############################################################################
 # Typer CLI
 ###############################################################################
-app = typer.Typer(help="CLI to generate 2D displacement -> STL -> Tetrahedral Mesh, then upload to MinIO.")
-
+app = typer.Typer(
+    help="CLI to generate 2D displacement -> STL -> Tetrahedral Mesh, then upload to MinIO."
+)
 
 ###############################################################################
-# Main Steps
+# Common Pipeline Function
 ###############################################################################
-def generate_and_process(
-    noise_name: str,
-    noise_func,
+def common_pipeline(
+    png_preparation_func,
+    preparation_args: dict,
+    identifier: str,
+    params: dict,
     map_size: int,
-    client: Minio
+    client: Minio,
+    required_buckets: list,
+    ftetwild_bin: str,
+    rebuild: bool,
+    rebuild_metadata: bool,
+    progress_bar: tqdm,
+    metadata_extra: dict = {}
 ):
     """
-    1) Generate a displacement map (PNG),
-    2) Convert to STL (via hmm),
-    3) Run fTetWild for .msh,
-    4) Upload to MinIO in different buckets.
+    Runs the common steps from PNG generation to metadata upload.
 
-    If any step fails, raise typer.Exit(1) to stop the entire script.
+    Args:
+        png_preparation_func: Function to generate and save PNG. Should return path to PNG.
+        preparation_args (dict): Arguments for png_preparation_func.
+        identifier (str): Name identifier (noise_name or scan_name).
+        params (dict): Parameters for metadata.
+        map_size (int): Size of the displacement map.
+        client (Minio): MinIO client instance.
+        required_buckets (list): List of required bucket names.
+        ftetwild_bin (str): Path for the fTetWild binary.
+        rebuild (bool): Flag to force regeneration.
+        rebuild_metadata (bool): Flag to force metadata regeneration.
+        progress_bar (tqdm): Progress bar instance.
+        metadata_extra (dict): Additional metadata parameters.
     """
-    logger.info(f"=== Processing noise: {noise_name}, size={map_size} ===")
+    logger.info(f"=== Processing {identifier}, size: {map_size} ===")
+    generation_start_time = datetime.now().timestamp()
 
-    # Create a temporary folder for intermediate files
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Step 1: Generate displacement map
+    # Ensure required buckets
+    for bucket in required_buckets:
+        ensure_bucket_exists(client, bucket)
+
+    # Define filenames and object names
+    png_filename = build_filename(identifier, params, map_size, "png")
+    stl_filename = build_filename(identifier, params, map_size, "stl")
+    msh_filename = build_filename(identifier, params, map_size, "msh")
+
+    # Determine object paths based on type (noise or scan)
+    if params.get("scan"):
+        base_path = f"scan/{identifier}"
+    else:
+        base_path = identifier
+
+    displacement_obj = f"{base_path}/{png_filename}"
+    stl_obj = f"{base_path}/{stl_filename}"
+    msh_obj = f"{base_path}/{msh_filename}"
+
+    # Check existence in MinIO unless rebuilding
+    if not rebuild:
         try:
-            disp = generate_displacement_map(
-                noise_func=noise_func,
-                map_size=map_size,
-                normalize=True
-            )
-            png_path = os.path.join(tmpdir, f"{noise_name}_{map_size}.png")
-            save_displacement_map(disp, png_path)
+            png_exists = check_file_exists_in_minio(client, "displacement", displacement_obj)
+            stl_exists = check_file_exists_in_minio(client, "stl", stl_obj)
+            msh_exists = check_file_exists_in_minio(client, "tetrahedral", msh_obj)
+
+            if png_exists and stl_exists and msh_exists:
+                logger.info(f"All files already exist in MinIO for {identifier}, size: {map_size}. Skipping generation.")
+                progress_bar.update(1)
+                return
+            else:
+                logger.info(f"Files missing in MinIO for {identifier}, size: {map_size}. Proceeding with generation.")
+        except S3Error as s3e:
+            logger.error(f"MinIO check failed for {identifier}, size {map_size}: {s3e}")
+            typer.Exit(code=1)
+    else:
+        logger.info(f"Rebuild enabled. Regenerating files for {identifier}, size: {map_size}.")
+
+    # Create temporary directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            # Step 1: Prepare PNG (noise generation or scan processing)
+            png_path = png_preparation_func(tmpdir=tmpdir, **preparation_args)
             logger.info(f"Generated PNG: {png_path}")
         except Exception as e:
-            logger.error(f"Failed generating displacement for {noise_name}_{map_size}: {e}")
-            raise typer.Exit(1)
+            logger.error(f"PNG preparation failed for {identifier}, size: {map_size}: {e}")
+            typer.Exit(code=1)
 
         # Step 2: Convert PNG -> STL via hmm
-        stl_path = os.path.join(tmpdir, f"{noise_name}_{map_size}.stl")
+        stl_path = os.path.join(tmpdir, stl_filename)
+        hmm_start_time = datetime.now().timestamp()
         try:
             run_hmm(
                 input_file=png_path,
                 output_file=stl_path,
                 error="0.001",
+                z_exagg=10.0 if not params.get("scan") else 2.0,
+                z_value=3 if not params.get("scan") else 10.0,
+                base=1 if not params.get("scan") else 0.001,
                 triangles=None,
                 quiet=True
             )
             logger.info(f"Generated STL: {stl_path}")
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logger.error(f"hmm failed for {png_path}: {e}")
-            raise typer.Exit(1)
+            typer.Exit(code=1)
 
         # Step 3: Tetrahedral mesh via fTetWild
-        tet_dir = tempfile.mkdtemp(prefix="ftetwild_", dir=tmpdir)
-        msh_path = os.path.join(tet_dir, f"{noise_name}_{map_size}.msh")
+        tet_dir = os.path.join(tmpdir, "ftetwild_output")
+        os.makedirs(tet_dir, exist_ok=True)
+        msh_path = os.path.join(tet_dir, msh_filename)
+        ftetwild_start_time = datetime.now().timestamp()
         try:
             logger.info(f"Running fTetWild on STL -> MSH: {msh_path}")
             run_ftetwild(
                 input_mesh=stl_path,
+                output_dir=tet_dir,
                 ideal_edge_length=0.02,
                 epsilon=0.0001,
                 stop_energy=10.0,
-                max_iterations=30,  # shorter run for demo
+                max_iterations=30,
                 docker=False,
-                upload_to_minio=True
+                ftetwild_bin=ftetwild_bin,
+                upload_to_minio=False
             )
             if not os.path.exists(msh_path):
-                logger.warning("Could not find the .msh output; ensure run_ftetwild is adapted.")
+                logger.error(f"Failed to generate .msh at {msh_path}. Aborting.")
+                typer.Exit(code=1)
+            logger.info(f"Generated MSH: {msh_path}")
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             logger.error(f"fTetWild failed for {stl_path}: {e}")
-            raise typer.Exit(1)
+            typer.Exit(code=1)
         except Exception as e:
-            logger.error(f"fTetWild encountered an error: {e}")
-            raise typer.Exit(1)
+            logger.error(f"fTetWild error: {e}")
+            typer.Exit(code=1)
 
         # Step 4: Upload results to MinIO
-        png_object_name = os.path.basename(png_path)
-        stl_object_name = os.path.basename(stl_path)
-        msh_object_name = os.path.basename(msh_path)
         try:
             logger.info("[MinIO] Uploading PNG...")
-            client.fput_object(
-                bucket_name="displacement",
-                object_name=png_object_name,
-                file_path=png_path
-            )
+            upload_file_to_minio(client, "displacement", png_path, displacement_obj, overwrite=rebuild)
 
             logger.info("[MinIO] Uploading STL...")
-            client.fput_object(
-                bucket_name="stl",
-                object_name=stl_object_name,
-                file_path=stl_path
-            )
+            upload_file_to_minio(client, "stl", stl_path, stl_obj, overwrite=rebuild)
 
-            if os.path.exists(msh_path):
-                logger.info("[MinIO] Uploading MSH...")
-                client.fput_object(
-                    bucket_name="tetrahedral",
-                    object_name=msh_object_name,
-                    file_path=msh_path
-                )
-            else:
-                logger.warning(f"No MSH file found for {noise_name}_{map_size}.")
-
+            logger.info("[MinIO] Uploading MSH...")
+            upload_file_to_minio(client, "tetrahedral", msh_path, msh_obj, overwrite=rebuild)
         except S3Error as s3e:
-            logger.error(f"MinIO upload failed for {noise_name}_{map_size}: {s3e}")
-            raise typer.Exit(1)
+            logger.error(f"MinIO upload failed for {identifier}, size {map_size}: {s3e}")
+            typer.Exit(code=1)
 
-    logger.info(f"=== Done with noise: {noise_name}, size={map_size} ===\n")
+        # Step 5: Collect and Upload Metadata
+        try:
+            collect_and_upload_metadata(
+                noise_name=identifier,
+                noise_params=params,
+                map_size=map_size,
+                client=client,
+                displacement_obj=displacement_obj,
+                stl_obj=stl_obj,
+                msh_obj=msh_obj,
+                displacement_path=png_path,
+                stl_path=stl_path,
+                msh_path=msh_path,
+                generation_start_time=generation_start_time,
+                hmm_start_time=hmm_start_time,
+                ftetwild_start_time=ftetwild_start_time,
+                hmm_triangles=None,
+                hmm_error=0.0001 if not params.get("scan") else 0.001,
+                hmm_z_exaggeration=1 if not params.get("scan") else 2,
+                hmm_z_value=10.0 if not params.get("scan") else 10.0,
+                hmm_base=1 if not params.get("scan") else 1,
+                ftetwild_bin=ftetwild_bin,
+                rebuild_metadata=rebuild_metadata,
+                **metadata_extra
+            )
+        except Exception as e:
+            logger.error(f"Metadata upload failed for {identifier}, size {map_size}: {e}")
+            typer.Exit(code=1)
 
+    logger.info(f"=== Done with {identifier}, size {map_size} ===\n")
+    progress_bar.update(1)
 
+###############################################################################
+# Specific Preparation Functions
+###############################################################################
+def prepare_noise_png(tmpdir, noise_func, noise_params, map_size):
+    disp = generate_displacement_map(
+        noise_func=noise_func,
+        map_size=map_size,
+        noise_params=noise_params,
+        normalize=True
+    )
+    png_filename = build_filename(noise_params.get("name", "noise"), noise_params, map_size, "png")
+    png_path = os.path.join(tmpdir, png_filename)
+    save_displacement_map(disp, png_path)
+    return png_path
+
+def prepare_scan_png(tmpdir, scan_object, map_size):
+    # Download scan image
+    scan_local_path = os.path.join(tmpdir, Path(scan_object).name)
+    # Assuming 'client', 'scan_bucket' are globally accessible or passed separately if needed.
+    # For simplicity in this function, we will assume the scan image has been downloaded beforehand.
+    # Adjust as necessary based on your environment.
+    download_scan_image(client, params["scan_bucket"], scan_object, scan_local_path)
+
+    # Open the scan image and apply random rotation
+    disp_image = Image.open(scan_local_path).convert("L")
+    original_size = disp_image.size
+    random_angle = uniform(0, 360)
+    disp_image = disp_image.rotate(random_angle, resample=Image.BICUBIC, expand=False)
+    logger.info(f"Applied random rotation: {random_angle:.2f} degrees.")
+
+    disp_image = disp_image.resize((map_size, map_size), Image.LANCZOS)
+    png_filename = build_filename(Path(scan_object).stem, {"scan": True}, map_size, "png")
+    png_path = os.path.join(tmpdir, png_filename)
+    disp_image.save(png_path)
+    return png_path
+
+###############################################################################
+# Processing Functions for Noise and Scan
+###############################################################################
+def process_noise(
+    noise_name: str,
+    noise_func,
+    noise_params: dict,
+    map_size: int,
+    client: Minio,
+    required_buckets: list,
+    ftetwild_bin: str,
+    rebuild: bool,
+    rebuild_metadata: bool,
+    progress_bar: tqdm
+):
+    params = noise_params.copy()
+    params["name"] = noise_name
+    common_pipeline(
+        png_preparation_func=prepare_noise_png,
+        preparation_args={
+            "noise_func": noise_func,
+            "noise_params": noise_params,
+            "map_size": map_size
+        },
+        identifier=noise_name,
+        params=params,
+        map_size=map_size,
+        client=client,
+        required_buckets=required_buckets,
+        ftetwild_bin=ftetwild_bin,
+        rebuild=rebuild,
+        rebuild_metadata=rebuild_metadata,
+        progress_bar=progress_bar
+    )
+
+def process_scan(
+    scan_name: str,
+    scan_object: str,
+    scan_bucket: str,
+    map_size: int,
+    client: Minio,
+    required_buckets: list,
+    ftetwild_bin: str,
+    rebuild: bool,
+    rebuild_metadata: bool,
+    progress_bar: tqdm
+):
+    params = {"scan": True, "scan_bucket": scan_bucket}
+    # Pass global variables needed by prepare_scan_png
+    global client_global, params_global
+    client_global = client
+    params_global = params
+
+    common_pipeline(
+        png_preparation_func=prepare_scan_png,
+        preparation_args={
+            "scan_object": scan_object,
+            "map_size": map_size
+        },
+        identifier=scan_name,
+        params=params,
+        map_size=map_size,
+        client=client,
+        required_buckets=required_buckets,
+        ftetwild_bin=ftetwild_bin,
+        rebuild=rebuild,
+        rebuild_metadata=rebuild_metadata,
+        progress_bar=progress_bar
+    )
+
+###############################################################################
+# Main Steps
+###############################################################################
 @app.command("all")
-def generate_all():
+def generate_all(
+    map_sizes: list[int] = typer.Option(
+        [64, 128, 256, 512, 1024],
+        help="List of map sizes to generate.",
+        show_default=True
+    ),
+    noise_types: list[str] = typer.Option(
+        [
+            "sine", "square", "perlin", "fbm", "gabor", 
+            "random_walk", "ornstein_uhlenbeck", "vasicek", 
+            "blue_noise", "halton", "wavelet", "domain_warp"
+        ],
+        help="List of noise types to generate displacement maps.",
+        show_default=True
+    ),
+    ftetwild_bin: str = typer.Option(
+        "/home/antoine/code/fTetWild/build/FloatTetwild_bin",
+        "--ftetwild-bin",
+        help="Path or alias for the fTetWild binary.",
+        show_default=True
+    ),
+    process_scans: bool = typer.Option(
+        False,
+        "--process-scans",
+        help="Enable processing of scan images from MinIO.",
+        show_default=False
+    ),
+    scan_bucket: str = typer.Option(
+        "scan",
+        "--scan-bucket",
+        help="Name of the MinIO bucket containing scan images.",
+        show_default=True
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Rebuild all displacement maps, STL, and tetrahedral meshes.",
+        show_default=False
+    ),
+    rebuild_metadata: bool = typer.Option(
+        False,
+        "--rebuild-metadata",
+        help="Rebuild metadata JSON files.",
+        show_default=False
+    ),
+):
     """
-    Generate displacement -> PNG -> STL -> MSH, then upload to MinIO
-    for multiple noise functions & map sizes.
+    Generate displacement maps for multiple noise functions and map sizes,
+    convert them to STL, create tetrahedral meshes, and upload all results to MinIO.
     Stops immediately if any step fails.
     """
-    # If anything in this function fails, we exit
-    client = setup_minio_client()
+    unsupported_noises = [noise for noise in noise_types if noise not in noise_variations]
+    if unsupported_noises:
+        logger.error(f"Unsupported noise types: {unsupported_noises}")
+        raise typer.Exit(code=1)
 
-    # Define some noise variations
-    noise_variations = {
-        "sine": sine_noise,
-        "square": square_noise,
-        "perlin": perlin_noise,
-        "fbm": fbm_noise,
-        "fractal": fractal_noise,
-        "gabor": gabor_noise,
-    }
+    scan_images = []
+    scan_tasks = 0
+    if process_scans:
+        client = setup_minio_client(bucket_names=REQUIRED_BUCKETS + [scan_bucket])
+        scan_images = list_scan_images(client, scan_bucket)
+        scan_tasks = len(scan_images) * len(map_sizes)
 
-    # Example map sizes
-    map_sizes = [64, 128]
+    noise_tasks = sum(len(noise_variations[noise]) * len(map_sizes) for noise in noise_types)
 
-    # Loop
-    for noise_name, noise_func in noise_variations.items():
-        for size in map_sizes:
-            generate_and_process(
-                noise_name=noise_name,
-                noise_func=noise_func,
-                map_size=size,
-                client=client
-            )
+    total_tasks = scan_tasks + noise_tasks
 
-    logger.info("All noise functions completed.")
+    if total_tasks == 0:
+        logger.info("No tasks to process. Exiting.")
+        sys.exit(0)
 
+    if not process_scans and not noise_types:
+        logger.info("No noise types or scan processing enabled. Exiting.")
+        sys.exit(0)
 
+    if not process_scans:
+        client = setup_minio_client(bucket_names=REQUIRED_BUCKETS)
+
+    with tqdm(total=total_tasks, desc="Overall Progress", bar_format='{l_bar}{bar} [ time left: {remaining} ]') as progress_bar:
+        tasks = []
+        max_workers = min(16, os.cpu_count() or 1)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            if process_scans:
+                for scan_object in scan_images:
+                    scan_name = Path(scan_object).stem
+                    for size in map_sizes:
+                        task = executor.submit(
+                            process_scan,
+                            scan_name=scan_name,
+                            scan_object=scan_object,
+                            scan_bucket=scan_bucket,
+                            map_size=size,
+                            client=client,
+                            required_buckets=REQUIRED_BUCKETS,
+                            ftetwild_bin=ftetwild_bin,
+                            rebuild=rebuild,
+                            rebuild_metadata=rebuild_metadata,
+                            progress_bar=progress_bar
+                        )
+                        tasks.append(task)
+
+            for noise_name in noise_types:
+                for noise_func, noise_params in noise_variations[noise_name]:
+                    for size in map_sizes:
+                        task = executor.submit(
+                            process_noise,
+                            noise_name=noise_name,
+                            noise_func=noise_func,
+                            noise_params=noise_params,
+                            map_size=size,
+                            client=client,
+                            required_buckets=REQUIRED_BUCKETS,
+                            ftetwild_bin=ftetwild_bin,
+                            rebuild=rebuild,
+                            rebuild_metadata=rebuild_metadata,
+                            progress_bar=progress_bar
+                        )
+                        tasks.append(task)
+
+            for future in as_completed(tasks):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"An error occurred during processing: {e}")
+                    typer.Exit(code=1)
+
+    logger.info("All processing tasks completed successfully.")
+
+###############################################################################
+# Entry Point
+###############################################################################
 if __name__ == "__main__":
     app()

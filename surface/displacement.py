@@ -2,7 +2,8 @@
 displacement.py
 
 Provides functions to generate and save a 2D displacement map using arbitrary
-noise functions, with support for PNG or TIFF output.
+noise functions, with support for PNG or TIFF output. Also includes functionality
+to convert a normal map into a displacement map.
 """
 
 import os
@@ -14,6 +15,10 @@ from PIL import Image
 from rich.console import Console
 from rich.logging import RichHandler
 
+# Import additional libraries for normal map conversion
+import inspect
+from scipy import fftpack
+
 # Configure logging for this file
 logging.basicConfig(
     level=logging.INFO,
@@ -24,51 +29,48 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 console = Console()  # If you want direct Rich printing
 
-def generate_displacement_map(
-    noise_func,
-    map_size=256,
-    noise_params=None,
-    x_range=(-1.0, 1.0),
-    y_range=(-1.0, 1.0),
-    normalize=True
-):
-    """
-    Generate a 2D displacement map using a given noise function.
-    ...
-    """
-    if noise_params is None:
-        noise_params = {}
+def generate_displacement_map(noise_func, map_size, noise_params, normalize=True):
+    # Inspect the noise function's signature
+    sig = inspect.signature(noise_func)
+    valid_params = {k: v for k, v in noise_params.items() if k in sig.parameters}
+    
+    # Create grid of coordinates
+    x, y = np.meshgrid(
+        np.linspace(0, 1, map_size, endpoint=False),
+        np.linspace(0, 1, map_size, endpoint=False)
+    )
+    
+    try:
+        # Try calling noise_func directly (assuming it supports array inputs)
+        disp_map = noise_func(x, y, **valid_params)
+    except TypeError as te:
+        logger.warning(f"Noise function '{noise_func.__name__}' is not vectorized. Applying np.vectorize. Error: {te}")
+        # Fallback: vectorize the function on the fly,
+        # explicitly converting inputs to floats.
+        vectorized_func = np.vectorize(
+            lambda xi, yi: noise_func(float(xi), float(yi), **valid_params)
+        )
+        disp_map = vectorized_func(x, y)
+    except Exception as e:
+        logger.error(f"Error in noise_func '{noise_func.__name__}' with params {noise_params}: {e}")
+        raise
 
-    min_x, max_x = x_range
-    min_y, max_y = y_range
-
-    # Prepare linearly spaced coordinates
-    xs = np.linspace(min_x, max_x, map_size)
-    ys = np.linspace(min_y, max_y, map_size)
-
-    displacement = np.zeros((map_size, map_size), dtype=np.float32)
-
-    # Evaluate noise for each pixel
-    for i in range(map_size):
-        for j in range(map_size):
-            x_val = xs[i]
-            y_val = ys[j]
-            displacement[i, j] = noise_func(x_val, y_val, **noise_params)
-
-    # Optionally normalize to [0,1]
     if normalize:
-        dmin, dmax = displacement.min(), displacement.max()
-        if dmax > dmin:  # avoid division by zero
-            displacement = (displacement - dmin) / (dmax - dmin)
-        else:
-            displacement[:] = 0.0
+        disp_map = (disp_map - np.min(disp_map)) / (np.max(disp_map) - np.min(disp_map))
+    
+    return disp_map.astype(np.float32)
 
-    return displacement
 
 def save_displacement_map(displacement, filename="displacement.png"):
     """
     Save a 2D numpy array (values in [0,1]) as a grayscale image (PNG or TIFF).
-    ...
+
+    Parameters:
+    -----------
+    displacement : np.ndarray
+        2D array representing the displacement map. Values should be in [0,1].
+    filename     : str
+        Output filename. Supports PNG and TIFF formats based on the extension.
     """
     disp_clipped = np.clip(displacement, 0.0, 1.0)
     disp_8u = (disp_clipped * 255).astype(np.uint8)
