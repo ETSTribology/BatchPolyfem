@@ -6,6 +6,7 @@ tetrahedron.py
 """
 
 from storage import (
+    REQUIRED_BUCKETS,
     setup_minio_client,
     ensure_bucket_exists,
     upload_file_to_minio
@@ -18,13 +19,14 @@ import subprocess
 from minio import S3Error
 from rich.console import Console
 from rich.logging import RichHandler
-from tqdm import tqdm
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import ray
+from ray.util import ActorPool
 
 # Configure Logging
 logging.basicConfig(
-    level=logging.WARNING,  # Set to WARNING to suppress INFO logs
+    level=logging.INFO,  # Set to WARNING to suppress INFO logs
     format="%(message)s",
     datefmt="[%X]",
     handlers=[RichHandler()]
@@ -43,7 +45,7 @@ def run_ftetwild(
     stop_energy: float = 10.0,
     max_iterations: int = 80,
     docker: bool = False,
-    ftetwild_bin: str = "ftetwild",  # Default to 'ftetwild', configurable via CLI
+    ftetwild_bin: str = "/home/antoine/code/fTetWild/build/FloatTetwild_bin",  # Default to 'ftetwild', configurable via CLI
     upload_to_minio: bool = False
 ):
     """
@@ -69,10 +71,8 @@ def run_ftetwild(
     output_mesh_with_suffix = os.path.join(output_dir, f"{basename}_ftet.msh")
 
     if docker:
-        # Docker approach (omitted)
         raise NotImplementedError("Docker mode for fTetWild not implemented here.")
     else:
-        # Check the local binary or PATH
         if not shutil.which(ftetwild_bin):
             err_msg = (
                 f"[fTetWild] The specified ftetwild binary '{ftetwild_bin}' "
@@ -86,70 +86,34 @@ def run_ftetwild(
         cmd = [
             ftetwild_bin,
             "-i", input_mesh,
-            "-o", output_mesh_with_suffix,
-            # Uncomment and adjust parameters as needed
-            # "-l", str(ideal_edge_length),
-            # "-e", str(epsilon),
-            # "-s", str(stop_energy),
-            # "-m", str(max_iterations)
+            "-o", output_mesh_with_suffix
         ]
 
-    # Initialize the tqdm progress bar
-    pbar = tqdm(total=100, desc="[fTetWild] Processing", bar_format='{l_bar}{bar} [ time left: {remaining} ]')
-
     try:
-        # Start the subprocess
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,  # Line-buffered
+            bufsize=1,
             universal_newlines=True
         )
 
-        # Function to update the progress bar based on stdout
-        def update_pbar():
-            for line in process.stdout:
-                # Parse lines like "Progress: 45%"
-                if "Progress:" in line:
-                    try:
-                        progress_str = line.strip().split("Progress:")[1].strip().replace("%", "")
-                        progress = int(progress_str)
-                        pbar.n = progress
-                        pbar.refresh()
-                    except (IndexError, ValueError):
-                        pass
-            process.stdout.close()
-
-        # Start the progress updater thread
-        thread = threading.Thread(target=update_pbar, daemon=True)
-        thread.start()
-
-        # Wait for the process to complete
-        process.wait()
-        thread.join()
+        stdout, stderr = process.communicate()
 
         if process.returncode != 0:
-            stderr = process.stderr.read()
             logger.error(f"[fTetWild] Exited with code {process.returncode}")
             logger.error(f"[fTetWild] STDERR:\n{stderr}")
             raise subprocess.CalledProcessError(process.returncode, cmd)
-
     except subprocess.CalledProcessError as e:
         logger.error(f"[fTetWild] Failed with exit code {e.returncode}")
-        logger.error("[fTetWild] STDERR:\n" + (e.stderr or ""))
         raise
     except FileNotFoundError:
         logger.error(f"[fTetWild] Could not find the binary '{ftetwild_bin}'.")
         raise
-    finally:
-        # Ensure the progress bar is closed
-        pbar.close()
 
     logger.warning(f"[fTetWild] Successfully generated: {output_mesh_with_suffix}")
 
-    # Rename the .msh file to remove the '_ftet' suffix
     output_mesh_final = os.path.join(output_dir, f"{basename}.msh")
     if os.path.exists(output_mesh_with_suffix):
         os.rename(output_mesh_with_suffix, output_mesh_final)
@@ -158,55 +122,102 @@ def run_ftetwild(
         logger.error(f"Expected output mesh '{output_mesh_with_suffix}' not found.")
         raise FileNotFoundError(f"Expected output mesh '{output_mesh_with_suffix}' not found.")
 
-    # Gather all potential extra files based on fTetWild's actual output
-    extra_suffixes = [
-        "_.csv",
-        "__sf.obj",
-        "__tracked_surface.stl"
-    ]
-    all_files_to_upload = [output_mesh_final]  # Always upload the main .msh
-    for suf in extra_suffixes:
-        candidate = output_mesh_final + suf
-        if os.path.exists(candidate):
-            all_files_to_upload.append(candidate)
-        else:
-            logger.warning(f"[fTetWild] Expected sidecar file not found: {candidate}")
-
-    # Optionally upload to MinIO using threading for faster uploads
     if upload_to_minio:
         try:
-            logger.warning("[fTetWild] Uploading files to MinIO concurrently...")
+            logger.warning("[fTetWild] Uploading files to MinIO...")
             minio_client, minio_bucket = setup_minio_client()
             ensure_bucket_exists(minio_client, minio_bucket)
 
-            def upload_single_file(local_file):
-                obj_name = os.path.basename(local_file)
-                upload_file_to_minio(
-                    client=minio_client,
-                    bucket_name=minio_bucket,
-                    file_path=local_file,
-                    object_name=obj_name
-                )
-                return local_file
-
-            # Use ThreadPoolExecutor to upload files concurrently
-            with ThreadPoolExecutor(max_workers=min(8, len(all_files_to_upload))) as executor:
-                futures = [executor.submit(upload_single_file, lf) for lf in all_files_to_upload]
-                for future in as_completed(futures):
-                    try:
-                        uploaded_file = future.result()
-                        logger.warning(f"Uploaded: {uploaded_file}")
-                    except Exception as e:
-                        logger.error(f"Error uploading file: {e}")
-
-            # Delete local files after successful upload
-            for local_file in all_files_to_upload:
-                try:
-                    os.remove(local_file)
-                    logger.warning(f"Deleted local file: {local_file}")
-                except OSError as e:
-                    logger.warning(f"Could not delete file {local_file}: {e}")
-
+            upload_file_to_minio(
+                client=minio_client,
+                bucket_name=minio_bucket,
+                file_path=output_mesh_final,
+                object_name=os.path.basename(output_mesh_final)
+            )
+            logger.warning(f"Uploaded: {output_mesh_final}")
         except S3Error as s3e:
             logger.error(f"[fTetWild] Upload failed: {s3e}")
             raise
+
+@ray.remote
+def run_ftetwild_ray(
+    input_mesh: str,
+    output_dir: str,
+    ideal_edge_length: float = 0.02,
+    epsilon: float = 0.0001,
+    stop_energy: float = 10.0,
+    max_iterations: int = 80,
+    ftetwild_bin: str = "ftetwild"
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    basename = os.path.splitext(os.path.basename(input_mesh))[0]
+    output_mesh_with_suffix = os.path.join(output_dir, f"{basename}_ftet.msh")
+    output_mesh_final = os.path.join(output_dir, f"{basename}.msh")
+
+    if not shutil.which(ftetwild_bin):
+        raise FileNotFoundError(f"The specified ftetwild binary '{ftetwild_bin}' was not found.")
+
+    cmd = [
+        ftetwild_bin,
+        "-i", input_mesh,
+        "-o", output_mesh_with_suffix,
+        "-l", str(ideal_edge_length),
+        "-e", str(epsilon),
+        "-s", str(stop_energy),
+        "-m", str(max_iterations)
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if os.path.exists(output_mesh_with_suffix):
+            os.rename(output_mesh_with_suffix, output_mesh_final)
+            logger.debug(f"[fTetWild] Successfully generated: {output_mesh_final}")
+        else:
+            raise FileNotFoundError(f"Expected output mesh '{output_mesh_with_suffix}' not found.")
+    except Exception as e:
+        logger.error(f"[fTetWild] Error processing {input_mesh}: {e}")
+        raise
+
+    return output_mesh_final
+
+def distribute_ftetwild_tasks(tasks, ftetwild_bin="ftetwild", upload_to_minio=False):
+    logger.debug(f"Connected to Ray cluster: {ray.cluster_resources()}")
+
+    ray_tasks = [
+        run_ftetwild_ray.remote(task[0], task[1], ftetwild_bin=ftetwild_bin)
+        for task in tasks
+    ]
+
+    results = []
+    while ray_tasks:
+        done, ray_tasks = ray.wait(ray_tasks, num_returns=1, timeout=30)
+        for result in done:
+            try:
+                output_file = ray.get(result)
+                results.append(output_file)
+                logger.debug(f"Task completed successfully: {output_file}")
+            except Exception as e:
+                logger.error(f"Task failed: {e}")
+
+    if upload_to_minio:
+        upload_results_to_minio(results)
+
+    ray.shutdown()
+
+def upload_results_to_minio(file_paths: list) -> None:
+    minio_client, minio_bucket = setup_minio_client()
+    ensure_bucket_exists(minio_client, minio_bucket)
+
+    def upload_file(file_path):
+        object_name = os.path.basename(file_path)
+        upload_file_to_minio(minio_client, minio_bucket, file_path, object_name)
+        logger.debug(f"Uploaded {file_path} to MinIO.")
+
+    with ThreadPoolExecutor(max_workers=min(8, len(file_paths))) as executor:
+        futures = [executor.submit(upload_file, file) for file in file_paths]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"Failed to upload file: {e}")
+
