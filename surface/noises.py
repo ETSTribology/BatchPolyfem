@@ -30,6 +30,9 @@ console = Console()
 # Helper Functions
 # ------------------------------------------------------------------------
 
+def vectorize_function(func):
+    return np.vectorize(func)
+
 def radical_inverse(index, base):
     """
     Compute the radical inverse of an index in a given base.
@@ -59,7 +62,6 @@ def radical_inverse(index, base):
 # ------------------------------------------------------------------------
 # 2D/3D Spatial Noise Functions
 # ------------------------------------------------------------------------
-
 def sine_noise(x, y, frequency=10.0, amplitude=1.0):
     """
     Simple sine wave in the x-direction.
@@ -79,7 +81,6 @@ def sine_noise(x, y, frequency=10.0, amplitude=1.0):
         Noise value at (x, y).
     """
     return amplitude * np.sin(frequency * x)
-
 
 def square_noise(x, y, frequency=10.0, amplitude=1.0, duty_cycle=0.5):
     """
@@ -107,7 +108,6 @@ def square_noise(x, y, frequency=10.0, amplitude=1.0, duty_cycle=0.5):
     phase = (frequency * x) % 1.0
     return np.where(phase < duty_cycle, amplitude, -amplitude)
 
-
 def fbm_noise(x, y, z=0.0, scale=1.0, octaves=4, persistence=0.5, lacunarity=2.0):
     """
     Fractal Brownian Motion (fBm) using Perlin noise internally (pnoise3).
@@ -117,7 +117,7 @@ def fbm_noise(x, y, z=0.0, scale=1.0, octaves=4, persistence=0.5, lacunarity=2.0
 
     Parameters:
     -----------
-    x, y, z    : float
+    x, y, z    : float or np.ndarray
         3D coordinates (z can be used as time or extra dimension).
     scale      : float
         Scales the input coordinates to control the frequency of the noise.
@@ -130,18 +130,24 @@ def fbm_noise(x, y, z=0.0, scale=1.0, octaves=4, persistence=0.5, lacunarity=2.0
 
     Returns:
     --------
-    float
+    float or np.ndarray
         fBm noise value at (x, y, z).
     """
-    value = 0.0
-    amplitude = 1.0
-    frequency = 1.0
-    for _ in range(octaves):
-        value += amplitude * noise.pnoise3(x * frequency * scale, y * frequency * scale, z * frequency * scale)
-        amplitude *= persistence
-        frequency *= lacunarity
-    return value
-
+    def single_fbm(_x, _y, _z):
+        value = 0.0
+        amplitude = 1.0
+        frequency = 1.0
+        for _ in range(octaves):
+            value += amplitude * noise.pnoise3(_x * frequency * scale, 
+                                               _y * frequency * scale, 
+                                               _z * frequency * scale)
+            amplitude *= persistence
+            frequency *= lacunarity
+        return value
+    
+    # Vectorize the single_fbm function
+    vectorized_fbm = np.vectorize(single_fbm)
+    return vectorized_fbm(x, y, z)
 
 def fractal_noise(x, y, **kwargs):
     """
@@ -242,14 +248,17 @@ def white_noise(x, y, z=0.0, scale=1.0, seed=0):
     return rng.uniform(-1.0, 1.0)
 
 
+import numpy as np
+import noise
+
 def domain_warp_noise(x, y, z=0.0, scale=1.0, warp_scale=0.5, octaves=2, persistence=0.5, lacunarity=2.0):
     """
-    Domain warping using multiple layers of Perlin noise.
-
+    Vectorized domain warping using multiple layers of Perlin noise.
+    
     Parameters:
     -----------
-    x, y, z      : float
-        3D coordinates.
+    x, y, z      : array-like or float
+        3D coordinates. Can be scalars or NumPy arrays.
     scale        : float
         Scales the input coordinates.
     warp_scale   : float
@@ -263,13 +272,22 @@ def domain_warp_noise(x, y, z=0.0, scale=1.0, warp_scale=0.5, octaves=2, persist
 
     Returns:
     --------
-    float
+    np.ndarray or float
         Domain-warped noise value at (x, y, z).
     """
-    warp_x = noise.pnoise3(x * warp_scale * scale, y * warp_scale * scale, z * warp_scale * scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
-    warp_y = noise.pnoise3(x * warp_scale * scale + 100, y * warp_scale * scale + 100, z * warp_scale * scale + 100, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
+    # Vectorized wrapper for noise.pnoise3
+    pnoise3_vec = np.vectorize(
+        lambda x, y, z: noise.pnoise3(
+            x, y, z, octaves=octaves, persistence=persistence, lacunarity=lacunarity
+        )
+    )
     
-    return noise.pnoise3((x + warp_x) * scale, (y + warp_y) * scale, z * scale, octaves=octaves, persistence=persistence, lacunarity=lacunarity)
+    # Apply warp
+    warp_x = pnoise3_vec(x * warp_scale * scale, y * warp_scale * scale, z * warp_scale * scale)
+    warp_y = pnoise3_vec(x * warp_scale * scale + 100, y * warp_scale * scale + 100, z * warp_scale * scale + 100)
+    
+    # Final domain-warped noise
+    return pnoise3_vec((x + warp_x) * scale, (y + warp_y) * scale, z * scale)
 
 def diamond_square_noise(x, y, z=0.0, scale=1.0, size=256, roughness=0.5):
     """
@@ -433,10 +451,27 @@ def ridged_multifractal_noise(x, y, z=0.0, scale=1.0, octaves=6, lacunarity=2.0,
 
     return sum
 
-
 def perlin_noise(x, y, z=0.0, scale=1.0, octaves=1, persistence=0.5, lacunarity=2.0):
     """
     Basic Perlin noise (from 'noise' library) with support for multiple octaves.
+
+    Parameters:
+    -----------
+    x, y, z      : float or np.ndarray
+        Input coordinates for noise generation.
+    scale        : float
+        Scale of the noise.
+    octaves      : int
+        Number of octaves for fractal noise.
+    persistence  : float
+        Amplitude reduction factor for each octave.
+    lacunarity   : float
+        Frequency increase factor for each octave.
+
+    Returns:
+    --------
+    float or np.ndarray
+        Perlin noise value(s) at the given coordinates.
     """
     # Validate parameters
     if not isinstance(scale, (int, float)) or scale <= 0:
@@ -448,16 +483,20 @@ def perlin_noise(x, y, z=0.0, scale=1.0, octaves=1, persistence=0.5, lacunarity=
     if not isinstance(lacunarity, (int, float)) or lacunarity <= 0:
         raise ValueError(f"lacunarity must be a positive float, got {lacunarity}")
 
-    return noise.pnoise3(
-        x * scale,
-        y * scale,
-        z * scale,
-        octaves=octaves,
-        persistence=persistence,
-        lacunarity=lacunarity
+    # Vectorize the noise function to handle array inputs
+    vectorized_noise = np.vectorize(
+        lambda xi, yi, zi: noise.pnoise3(
+            xi * scale,
+            yi * scale,
+            zi * scale,
+            octaves=octaves,
+            persistence=persistence,
+            lacunarity=lacunarity
+        )
     )
 
-
+    # Apply vectorized function
+    return vectorized_noise(x, y, z)
 
 def gabor_noise(x, y, frequency=5.0, theta=0.0, sigma_x=1.0, sigma_y=1.0, offset=0.0):
     """
@@ -806,7 +845,7 @@ noise_variations = {
         for amp, freq, duty in product(
             [2.0, 3.0, 5.0, 10.0, 50.0, 100.0],  # Amplitude: Controls the height of the wave
             [1.0, 2.0, 5.0, 8.0, 10.0, 20.0, 50.0, 100.0],  # Frequency: Controls the number of cycles per unit
-            [0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]  # Duty cycle: Fraction of the period the signal is high
+            [0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 0.9]  # Duty cycle: Fraction of the period the signal is high
         )
     ],
     "perlin": [

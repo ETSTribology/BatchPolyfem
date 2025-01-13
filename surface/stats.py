@@ -6,8 +6,15 @@ from PIL import Image
 import meshio
 import logging
 from minio import Minio
-from storage import build_filename, check_file_exists_in_minio, upload_file_to_minio
+from storage import build_filename, check_file_exists_in_minio, upload_file_to_minio, BUCKETS
+from rich.logging import RichHandler
 
+logging.basicConfig(
+    level=logging.INFO,  # or INFO as needed
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler()]
+)
 logger = logging.getLogger(__name__)
 
 def collect_and_upload_metadata(
@@ -39,10 +46,9 @@ def collect_and_upload_metadata(
         metadata_path = os.path.join(os.path.dirname(msh_path), metadata_filename)
 
         # Check if metadata exists unless rebuilding
-        if not rebuild_metadata:
-            if check_file_exists_in_minio(client, "metadata", metadata_obj):
-                logger.info(f"Metadata {metadata_obj} already exists in MinIO. Skipping metadata generation.")
-                return
+        if not rebuild_metadata and check_file_exists_in_minio(client, BUCKETS.METADATA, metadata_obj):
+            logger.debug(f"Metadata {metadata_obj} already exists in MinIO. Skipping metadata generation.")
+            return
 
         # Calculate generation times
         generation_end_time = datetime.now().timestamp()
@@ -55,21 +61,28 @@ def collect_and_upload_metadata(
         displacement_array = np.array(disp_image)
         height, width = displacement_array.shape
 
-        # Calculate surface roughness parameters: Ra, Rq, Rz
+        # Calculate surface roughness parameters
         roughness_params = calculate_surface_roughness_parameters(displacement_array)
-
-        # Extract mesh statistics: vertices, faces, cell_counts, surface_area_top, volume
-        mesh_stats = extract_mesh_statistics(msh_path)
-
-        # Calculate advanced surface roughness parameters
         advanced_roughness = calculate_advanced_surface_roughness(displacement_array)
 
-        # Get file sizes in bytes
+        # Calculate additional displacement map statistics
+        displacement_stats = calculate_displacement_stats(displacement_array)
+
+        # Extract mesh statistics (common for both STL and tetrahedral meshes)
+        mesh_stats = extract_mesh_statistics(msh_path)
+
+        # Compute STL-specific statistics
+        stl_mesh = meshio.read(stl_path)
+        stl_normals = compute_triangle_normals(stl_mesh)
+        stl_unique_normals_count = count_unique_normals(stl_normals)
+        stl_top_face_stats = calculate_top_face_stats(stl_mesh)
+
+        # Get file sizes
         displacement_size = get_file_size(displacement_path)
         stl_size = get_file_size(stl_path)
         msh_size = get_file_size(msh_path)
 
-        # Compile metadata
+        # Compile metadata with additional statistics
         metadata = {
             "noise_name": noise_name,
             "noise_params": noise_params,
@@ -104,16 +117,32 @@ def collect_and_upload_metadata(
             },
             "displacement_map": {
                 "original_height": disp_image.height,
-                "original_width": disp_image.width
+                "original_width": disp_image.width,
+                "stats": displacement_stats
             },
-            "mesh_statistics": {
+            "stl_statistics": {
                 "vertices": mesh_stats["vertices"],
                 "faces": mesh_stats["faces"],
                 "cell_counts": mesh_stats["cell_counts"],
                 "surface_area_top": mesh_stats["surface_area_top"],
                 "volume": mesh_stats["volume"],
                 "height": height,
-                "width": width
+                "width": width,
+                "top_point": mesh_stats["top_point"],
+                "bottom_point": mesh_stats["bottom_point"],
+                "unique_normals_count": stl_unique_normals_count,
+                **stl_top_face_stats
+            },
+            "tet_statistics": {
+                "vertices": mesh_stats["vertices"],
+                "faces": mesh_stats["faces"],
+                "cell_counts": mesh_stats["cell_counts"],
+                "surface_area_top": mesh_stats["surface_area_top"],
+                "volume": mesh_stats["volume"],
+                "height": height,
+                "width": width,
+                "top_point": mesh_stats["top_point"],
+                "bottom_point": mesh_stats["bottom_point"]
             },
             "file_sizes_bytes": {
                 "displacement_png": displacement_size,
@@ -126,16 +155,16 @@ def collect_and_upload_metadata(
         # Save metadata to JSON file
         with open(metadata_path, 'w') as json_file:
             json.dump(metadata, json_file, indent=4)
-        logger.info(f"Generated metadata JSON: {metadata_path}")
+        logger.debug(f"Generated metadata JSON: {metadata_path}")
 
         # Upload metadata JSON to MinIO
-        logger.info("[MinIO] Uploading Metadata JSON...")
+        logger.debug("[MinIO] Uploading Metadata JSON...")
         upload_file_to_minio(
             client=client,
             bucket_name="metadata",
             file_path=metadata_path,
             object_name=metadata_obj,
-            overwrite=True  # Always overwrite metadata
+            overwrite=True
         )
 
     except Exception as e:
@@ -192,6 +221,26 @@ def calculate_advanced_surface_roughness(displacement_array: np.ndarray) -> dict
         logger.error(f"Failed to calculate advanced surface roughness parameters: {e}")
         raise
 
+def calculate_displacement_stats(displacement_array: np.ndarray) -> dict:
+    """
+    Calculate additional statistics for a displacement map.
+    """
+    hist, bin_edges = np.histogram(displacement_array, bins=256, range=(0, 255))
+    stats = {
+        "mean": float(np.mean(displacement_array)),
+        "std_dev": float(np.std(displacement_array)),
+        "min": float(np.min(displacement_array)),
+        "max": float(np.max(displacement_array)),
+        "percentiles": {
+            "25th": float(np.percentile(displacement_array, 25)),
+            "50th": float(np.percentile(displacement_array, 50)),
+            "75th": float(np.percentile(displacement_array, 75))
+        },
+        "histogram": hist.tolist(),
+        "histogram_bin_edges": bin_edges.tolist()
+    }
+    return stats
+
 def extract_mesh_statistics(msh_file_path: str) -> dict:
     try:
         mesh = meshio.read(msh_file_path)
@@ -201,12 +250,18 @@ def extract_mesh_statistics(msh_file_path: str) -> dict:
         total_surface_area = calculate_total_surface_area(mesh)
         surface_area_top = calculate_top_surface_area(mesh)
         volume = calculate_mesh_volume(mesh)
+        
+        # Get top and bottom points
+        extremes = get_top_bottom_points(mesh)
+        
         return {
             "vertices": vertices,
             "faces": len(cells.get("triangle", [])),
             "cell_counts": num_cells,
-            "surface_area_top": total_surface_area,
-            "volume": volume
+            "surface_area_top": surface_area_top,
+            "volume": volume,
+            "top_point": extremes["top_point"],
+            "bottom_point": extremes["bottom_point"]
         }
     except Exception as e:
         logger.error(f"Failed to extract mesh statistics from {msh_file_path}: {e}")
@@ -299,3 +354,84 @@ def calculate_tetrahedron_volume(tetra_points: np.ndarray) -> float:
     except Exception as e:
         logger.error(f"Failed to calculate tetrahedron volume: {e}")
         raise
+
+def get_top_bottom_points(mesh: meshio.Mesh) -> dict:
+    """
+    Find the top and bottom points in the mesh based on the z-coordinate.
+    """
+    points = mesh.points
+    top_index = np.argmax(points[:, 2])
+    bottom_index = np.argmin(points[:, 2])
+    return {
+        "top_point": points[top_index].tolist(),
+        "bottom_point": points[bottom_index].tolist()
+    }
+
+def compute_triangle_normals(mesh: meshio.Mesh) -> np.ndarray:
+    """
+    Compute normal vectors for each triangle in the mesh.
+    """
+    if "triangle" not in mesh.cells_dict:
+        return np.array([])
+    normals = []
+    for tri in mesh.cells_dict["triangle"]:
+        vertices = mesh.points[tri]
+        normal = calculate_normal(vertices)
+        normals.append(normal)
+    return np.array(normals)
+
+def count_unique_normals(normals: np.ndarray) -> int:
+    """
+    Count the number of unique normal vectors.
+    """
+    if normals.size == 0:
+        return 0
+    rounded_normals = np.round(normals, decimals=6)
+    unique_normals = np.unique(rounded_normals, axis=0)
+    return int(len(unique_normals))
+
+def calculate_top_face_stats(mesh: meshio.Mesh, threshold: float = 0.95) -> dict:
+    """
+    Calculate statistics for top-facing triangles of the mesh.
+    """
+    top_faces_count = 0
+    total_top_area = 0.0
+    normals_list = []
+
+    if "triangle" not in mesh.cells_dict:
+        return {
+            "top_faces_count": 0,
+            "total_top_area": 0.0,
+            "average_top_area": 0.0,
+            "mean_top_normal": [0.0, 0.0, 0.0]
+        }
+
+    for cell in mesh.cells_dict["triangle"]:
+        vertices = mesh.points[cell]
+        normal = calculate_normal(vertices)
+        if normal[2] >= threshold:
+            area = calculate_polygon_area(vertices)
+            total_top_area += area
+            top_faces_count += 1
+            normals_list.append(normal)
+
+    average_top_area = total_top_area / top_faces_count if top_faces_count else 0.0
+    mean_top_normal = np.mean(normals_list, axis=0).tolist() if normals_list else [0.0, 0.0, 0.0]
+
+    return {
+        "top_faces_count": top_faces_count,
+        "total_top_area": float(total_top_area),
+        "average_top_area": float(average_top_area),
+        "mean_top_normal": mean_top_normal
+    }
+
+def extract_stl_statistics(stl_file_path: str) -> dict:
+    """
+    Extract statistics specifically for the STL mesh.
+    """
+    mesh = meshio.read(stl_file_path)
+    stats = extract_mesh_statistics(stl_file_path)
+    top_face_stats = calculate_top_face_stats(mesh)
+    stats.update(top_face_stats)  # Add top face details
+    return stats
+

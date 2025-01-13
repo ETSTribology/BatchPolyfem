@@ -11,3 +11,11 @@ numpy
 scipy
 scikit-learn
 matplotlib
+s3fs
+boto3
+pyvista
+vtk
+plotly
+pyarrow
+pandas
+fsspec
