@@ -831,6 +831,121 @@ def sobol_noise(x, y, scramble=False, seed=None):
     return np.sum(sample) / len(sample)
 
 
+def cellular_noise(x, y, z=0.0, scale=1.0, jitter=0.5, mode="F1"):
+    """
+    Cellular (Worley) noise.
+
+    Parameters:
+    -----------
+    x, y, z : float or np.ndarray
+        3D coordinates.
+    scale   : float
+        Scale of the grid to control the size of cells.
+    jitter  : float
+        Jitter factor for feature points within the cells (0.0 to 1.0).
+    mode    : str
+        Determines the type of noise value to return:
+        - "F1": Closest distance (default)
+        - "F2": Second closest distance
+        - "F2 - F1": Difference between second and first closest distances.
+
+    Returns:
+    --------
+    float or np.ndarray
+        Cellular noise value at (x, y, z).
+    """
+    x = np.asarray(x) * scale
+    y = np.asarray(y) * scale
+    z = np.asarray(z) * scale
+
+    # Grid coordinates
+    x0 = np.floor(x).astype(int)
+    y0 = np.floor(y).astype(int)
+    z0 = np.floor(z).astype(int)
+
+    # Initialize distances
+    min_distances = [float("inf"), float("inf")]  # F1 and F2 distances
+
+    for dx, dy, dz in product([-1, 0, 1], repeat=3):
+        # Neighbor cell coordinates
+        neighbor_x = x0 + dx
+        neighbor_y = y0 + dy
+        neighbor_z = z0 + dz
+
+        # Random feature point within the cell
+        rng = np.random.default_rng(hash((neighbor_x, neighbor_y, neighbor_z)) & 0xFFFFFFFF)
+        feature_x = neighbor_x + rng.uniform(-jitter, jitter)
+        feature_y = neighbor_y + rng.uniform(-jitter, jitter)
+        feature_z = neighbor_z + rng.uniform(-jitter, jitter)
+
+        # Compute distance to the feature point
+        dist = np.sqrt((x - feature_x) ** 2 + (y - feature_y) ** 2 + (z - feature_z) ** 2)
+
+        # Update F1 and F2 distances
+        if dist < min_distances[0]:
+            min_distances[1] = min_distances[0]
+            min_distances[0] = dist
+        elif dist < min_distances[1]:
+            min_distances[1] = dist
+
+    # Return the noise value based on the mode
+    if mode == "F1":
+        return min_distances[0]
+    elif mode == "F2":
+        return min_distances[1]
+    elif mode == "F2 - F1":
+        return min_distances[1] - min_distances[0]
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+def koch_curve(iterations, length=1.0):
+    """
+    Generate a Koch curve fractal.
+
+    Parameters:
+    -----------
+    iterations : int
+        Number of iterations to apply the fractal rule.
+    length     : float
+        Length of the initial line segment.
+
+    Returns:
+    --------
+    list of tuple
+        List of points (x, y) representing the Koch curve.
+    """
+    def divide_segment(p1, p2):
+        """Divide a segment into four parts as per Koch curve rules."""
+        x1, y1 = p1
+        x2, y2 = p2
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        # Points dividing the line into thirds
+        pA = (x1 + dx / 3, y1 + dy / 3)
+        pB = (x1 + 2 * dx / 3, y1 + 2 * dy / 3)
+
+        # Point forming the peak of the equilateral triangle
+        angle = math.atan2(dy, dx) - math.pi / 3
+        length = math.sqrt(dx ** 2 + dy ** 2) / 3
+        pC = (pA[0] + length * math.cos(angle), pA[1] + length * math.sin(angle))
+
+        return [p1, pA, pC, pB, p2]
+
+    # Initialize with a single line segment
+    points = [(0, 0), (length, 0)]
+
+    for _ in range(iterations):
+        new_points = []
+        for i in range(len(points) - 1):
+            new_points.extend(divide_segment(points[i], points[i + 1])[:-1])
+        new_points.append(points[-1])
+        points = new_points
+
+    return points
+
+
 # Define noise functions mapping with their parameters
 noise_variations = {
     "sine": [
@@ -898,7 +1013,7 @@ noise_variations = {
         for alpha, beta, sigma, scale in product(
             [0.1, 0.15, 0.2],  # Alpha
             [0.05, 0.1, 0.15],  # Beta
-            [0.05, 0.1, 0.15],  # Sigma
+            [0.09, 0.1, 0.11],  # Sigma
             [0.9, 1.0, 1.1]  # Scale
         )
     ],
@@ -930,6 +1045,21 @@ noise_variations = {
             [2, 3, 4],  # Octaves
             [0.4, 0.5, 0.6],  # Persistence
             [1.8, 2.0, 2.5]  # Lacunarity
+        )
+    ],
+    "cellular" : [
+        (cellular_noise, {"scale": scale, "jitter": jitter, "mode": mode})
+        for scale, jitter, mode in product(
+            [0.5, 1.0, 1.5],  # Scale
+            [0.3, 0.5, 0.7],  # Jitter
+            ["F1", "F2", "F2 - F1"]  # Mode
+        )
+    ],
+    "koch_curve" : [
+        (koch_curve, {"iterations": iterations, "length": length})
+        for iterations, length in product(
+            [1, 2, 3, 4, 5],  # Iterations
+            [0.5, 1.0, 1.5, 2.0]  # Length
         )
     ],
 }

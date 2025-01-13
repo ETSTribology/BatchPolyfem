@@ -35,7 +35,7 @@ from storage import (
 )
 from displacement import generate_displacement_map, save_displacement_map
 from noises import noise_variations
-from hmm import run_hmm_sync, run_hmm_ray_task
+from hmm import run_hmm_sync, run_hmm_ray_task_sync
 from tetrahedron import run_ftetwild
 from config import config
 

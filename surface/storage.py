@@ -79,10 +79,10 @@ def setup_minio_client(bucket_names: List[str]) -> Minio:
     Ensures that the specified buckets exist.
     """
     client = Minio(
-        os.getenv("MINIO_ENDPOINT", "192.168.0.20:9000"),
+        os.getenv("MINIO_ENDPOINT", "minio.antoineboucher.info"),
         access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
         secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-        secure=False,
+        secure=True,
         region="canada"  # Set the expected region
     )
     for bucket in bucket_names:

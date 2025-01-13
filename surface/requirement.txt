@@ -19,3 +19,4 @@ plotly
 pyarrow
 pandas
 fsspec
+scikit-image
