@@ -991,42 +991,12 @@ noise_variations = {
             [0.0, 0.5, 1.0]  # Offset
         )
     ],
-    "random_walk": [
-        (random_walk_noise, {"scale": scale, "step_size": step, "seed": seed})
-        for scale, step, seed in product(
-            [0.5, 1.0, 1.5],  # Scale
-            [0.05, 0.1, 0.2],  # Step size
-            [7, 24, 42]  # Seed
-        )
-    ],
-    "ornstein_uhlenbeck": [
-        (ornstein_uhlenbeck_noise, {"theta": theta, "mu": mu, "sigma": sigma, "scale": scale})
-        for theta, mu, sigma, scale in product(
-            [0.1, 0.15, 0.2],  # Theta
-            [-0.1, 0.0, 0.1],  # Mu
-            [0.25, 0.3, 0.35],  # Sigma
-            [0.8, 1.0, 1.2]  # Scale
-        )
-    ],
-    "vasicek": [
-        (vasicek_noise, {"alpha": alpha, "beta": beta, "sigma": sigma, "scale": scale})
-        for alpha, beta, sigma, scale in product(
-            [0.1, 0.15, 0.2],  # Alpha
-            [0.05, 0.1, 0.15],  # Beta
-            [0.09, 0.1, 0.11],  # Sigma
-            [0.9, 1.0, 1.1]  # Scale
-        )
-    ],
     "blue_noise": [
         (blue_noise, {"scale": scale, "seed": seed})
         for scale, seed in product(
             [10, 15, 20],  # Scale
             [0, 1, 2]  # Seed
         )
-    ],
-    "halton": [
-        (halton_noise, {"base1": base1, "base2": base2})
-        for base1, base2 in product([2, 3, 5], [3, 5, 7])
     ],
     "wavelet": [
         (wavelet_noise, {"scale": scale, "octaves": octaves, "persistence": persistence, "lacunarity": lacunarity})
@@ -1046,20 +1016,5 @@ noise_variations = {
             [0.4, 0.5, 0.6],  # Persistence
             [1.8, 2.0, 2.5]  # Lacunarity
         )
-    ],
-    "cellular" : [
-        (cellular_noise, {"scale": scale, "jitter": jitter, "mode": mode})
-        for scale, jitter, mode in product(
-            [0.5, 1.0, 1.5],  # Scale
-            [0.3, 0.5, 0.7],  # Jitter
-            ["F1", "F2", "F2 - F1"]  # Mode
-        )
-    ],
-    "koch_curve" : [
-        (koch_curve, {"iterations": iterations, "length": length})
-        for iterations, length in product(
-            [1, 2, 3, 4, 5],  # Iterations
-            [0.5, 1.0, 1.5, 2.0]  # Length
-        )
-    ],
+    ]
 }

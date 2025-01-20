@@ -252,15 +252,19 @@ def create_noise_folder(noise_name: str) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
-def build_displacement_filename(noise_name: str, noise_params: dict, map_size: int) -> str:
+def build_displacement_filename(noise_name: str, noise_params: dict, inverse: bool, map_size: int) -> str:
     param_str = format_params(noise_params, sep="_")
     filename = f"{noise_name}_{param_str}.png"
+    if inverse:
+        filename = f"inverted_{filename}"
     return f"{noise_name}/{map_size}/{filename}"
 
-def build_stl_filename(noise_name: str, noise_params: dict, program_stl: str, stl_params: dict, map_size: int) -> str:
+def build_stl_filename(noise_name: str, noise_params: dict, program_stl: str, stl_params: dict, inverse: bool, map_size: int) -> str:
     noise_param_str = format_params(noise_params, sep="_")
     stl_param_str = format_params(stl_params, sep="_")
     filename = f"{noise_name}_{noise_param_str}_{program_stl}_{stl_param_str}.stl"
+    if inverse:
+        filename = f"inverted_{noise_name}_{noise_param_str}_{program_stl}_{stl_param_str}.stl"
     return f"{noise_name}/{map_size}/{filename}"
 
 def build_tetrahedral_filename(
@@ -270,6 +274,7 @@ def build_tetrahedral_filename(
     stl_params: dict,
     program_tet: str,
     tet_params: dict,
+    inverse: bool,
     map_size: int,
 ) -> str:
     """
@@ -282,6 +287,8 @@ def build_tetrahedral_filename(
     filename = (
         f"{noise_name}_{noise_param_str}_{program_stl}_{stl_param_str}_{program_tet}_{tet_param_str}.msh"
     )
+    if inverse:
+        filename = f"inverted_{filename}"
     return f"{noise_name}/{map_size}/{filename}"
 
 def build_metadata_filename(noise_name: str, noise_params: dict, map_size: int) -> str:

@@ -41,7 +41,7 @@ class Config(BaseSingleton):
         self.polyfem_bin: str = "/home/antoine/code/polyfem/build/PolyFEM_bin"
         self.hmm_bin: str = "hmm"
 
-        self.map_sizes: List[int] = [64, 128, 256, 512, 1024]
+        self.map_sizes: List[int] = [8, 16, 32, 64, 128, 256, 512, 1024]
 
         # Automatically populate noise_types from available noise_variations keys
         self.noise_types: List[str] = list(noise_variations.keys())

@@ -98,6 +98,22 @@ def generate_displacement_map(noise_funcs, map_size, noise_params_list, normaliz
 
     return combined_map.astype(np.float32)
 
+def invert_displacement_map(disp: np.ndarray) -> np.ndarray:
+    """
+    Invert a displacement map, i.e. 1.0 - value.
+
+    Parameters:
+    -----------
+    disp : np.ndarray
+        Displacement map in [0,1].
+
+    Returns:
+    --------
+    np.ndarray
+        Inverted displacement map in [0,1].
+    """
+    # Ensure values are between 0 and 1, then invert
+    return np.clip(1.0 - disp, 0.0, 1.0)
 
 def save_displacement_map(displacement, filename="displacement.png"):
     """
